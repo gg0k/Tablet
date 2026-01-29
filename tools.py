@@ -1,7 +1,7 @@
 import math
 from PyQt6.QtCore import Qt, QPointF, QRectF
-from PyQt6.QtGui import QPainterPath, QPen, QCursor, QTransform
-from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsRectItem, QGraphicsTextItem, QGraphicsPixmapItem, QGraphicsItem
+from PyQt6.QtGui import QPainterPath, QPen, QCursor, QTransform, QPainterPathStroker, QBrush, QColor
+from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsRectItem, QGraphicsTextItem, QGraphicsPixmapItem
 
 from config import Herramienta
 from custom_items import EditableTextItem, TransformGizmo
@@ -36,7 +36,7 @@ class PenTool(Tool):
         self.update_cursor()
 
     def update_cursor(self):
-        from PyQt6.QtGui import QPixmap, QPainter, QBrush, QColor
+        from PyQt6.QtGui import QPixmap, QPainter
         size = max(10, self.main.grosor_lapiz * 2)
         pix = QPixmap(size, size)
         pix.fill(Qt.GlobalColor.transparent)
@@ -121,14 +121,13 @@ class PenTool(Tool):
         capa = self.main.get_current_layer()
         if capa:
             self.view.set_item_props(path_item)
-            # Add command se encarga de agregarlo, pero necesitamos asegurar el Z-Index correcto
             cmd = CommandAdd(self.scene, path_item, capa, self.main)
             self.main.undo_stack.push(cmd)
 
 
 class EraserTool(Tool):
     def activate(self):
-        from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen
+        from PyQt6.QtGui import QPixmap, QPainter
         size = self.main.grosor_borrador
         pix = QPixmap(size, size)
         pix.fill(Qt.GlobalColor.transparent)
@@ -148,10 +147,19 @@ class EraserTool(Tool):
             self.borrar_vectorial(pos)
 
     def borrar_vectorial(self, pos):
+        """
+        Implementación estilo Flash:
+        1. Detecta si el item es un trazo (Stroke).
+        2. Si lo es, lo convierte en una forma rellena (Outline) usando QPainterPathStroker.
+        3. Realiza la resta booleana.
+        Esto evita que el path intente 'cerrarse' conectando el principio con el final.
+        """
         radio = self.main.grosor_borrador / 2
         goma_path = QPainterPath()
         goma_path.addEllipse(pos, radio, radio)
         rect_borrado = QRectF(pos.x() - radio, pos.y() - radio, radio * 2, radio * 2)
+
+        # Obtenemos items en el área de la goma
         items = self.scene.items(rect_borrado)
 
         for item in items:
@@ -166,24 +174,60 @@ class EraserTool(Tool):
                     continue
 
                 original_path = item.path()
-                if not original_path.intersects(rect_borrado):
+
+                # --- LÓGICA FLASH: Convertir trazo a forma ---
+                pen = item.pen()
+                brush = item.brush()
+
+                path_to_cut = original_path
+                is_stroke_conversion = False
+
+                # Verificamos si es un trazo puro (tiene Pen pero no Brush)
+                # Esto es típico del Lápiz. Al borrar, lo convertiremos en "Tinta" (Forma rellena)
+                if pen.style() != Qt.PenStyle.NoPen and brush.style() == Qt.BrushStyle.NoBrush:
+                    stroker = QPainterPathStroker()
+                    stroker.setWidth(pen.width())
+                    stroker.setCapStyle(pen.capStyle())
+                    stroker.setJoinStyle(pen.joinStyle())
+                    # Creamos un path que representa el contorno del trazo original
+                    path_to_cut = stroker.createStroke(original_path)
+                    is_stroke_conversion = True
+
+                # Verificamos intersección rápida
+                if not path_to_cut.intersects(rect_borrado):
                     continue
 
-                new_path = original_path.subtracted(goma_path)
+                # Resta Booleana: Aquí ocurre la magia de cortar
+                new_path = path_to_cut.subtracted(goma_path)
 
-                if new_path != original_path:
+                if new_path != path_to_cut:
+                    # Si el corte dejó el path vacío, lo borramos
                     if new_path.isEmpty():
                         cmd = CommandDelete(self.scene, [(item, capa_obj)], self.main)
                         self.main.undo_stack.push(cmd)
                     else:
+                        # Creamos el nuevo item recortado
                         new_item = QGraphicsPathItem(new_path)
-                        new_item.setPen(item.pen())
                         new_item.setZValue(item.zValue())
                         self.view.set_item_props(new_item)
+
+                        if is_stroke_conversion:
+                            # Si era un trazo, ahora es una forma rellena.
+                            # Usamos el color del pen original como relleno (Brush)
+                            # y quitamos el borde (Pen).
+                            new_fill_color = pen.color()
+                            new_item.setBrush(QBrush(new_fill_color))
+                            new_item.setPen(QPen(Qt.PenStyle.NoPen))
+                        else:
+                            # Si ya era una forma (ej. importada o ya convertida), mantenemos propiedades
+                            new_item.setBrush(brush)
+                            new_item.setPen(pen)
+
                         cmd = CommandReplace(self.scene, item, [new_item], capa_obj, self.main)
                         self.main.undo_stack.push(cmd)
 
             elif isinstance(item, (QGraphicsTextItem, QGraphicsPixmapItem)):
+                # Lógica para borrar textos e imágenes completos si se tocan
                 capa_obj = None
                 for capa in self.main.capas:
                     if item in capa.items:
@@ -329,7 +373,7 @@ class SelectionTool(Tool):
                     item.setSelected(False)
                     return
 
-                    # Si clicamos fuera o en un item para arrastrar
+        # Si clicamos fuera o en un item para arrastrar
         super(self.view.__class__, self.view).mousePressEvent(event)
 
         # Si empezamos a arrastrar items (movimiento normal)
@@ -363,9 +407,6 @@ class SelectionTool(Tool):
 
     def apply_transform(self, current_pos):
         # Lógica simplificada de transformación
-        # Nota: Una implementación completa de transformación de grupo es muy compleja matemáticamente
-        # Aquí haremos una aproximación aplicando cambios a cada item individualmente
-
         dx = current_pos.x() - self.start_pos.x()
         dy = current_pos.y() - self.start_pos.y()
 
@@ -378,7 +419,7 @@ class SelectionTool(Tool):
             angle_diff = math.degrees(angle_end - angle_start)
 
             for item in self.scene.selectedItems():
-                # Rotar alrededor del centro del item (más simple)
+                # Rotar alrededor del centro del item
                 item.setRotation(item.rotation() + angle_diff)
 
             # Resetear start para rotación incremental suave
@@ -386,9 +427,6 @@ class SelectionTool(Tool):
 
         elif 't' in self.active_handle or 'b' in self.active_handle or 'l' in self.active_handle or 'r' in self.active_handle:
             # Escalar
-            # Factor simple basado en distancia al centro
-            # Si nos alejamos del centro -> >1, si nos acercamos -> <1
-
             dist_start = math.hypot(self.start_pos.x() - center.x(), self.start_pos.y() - center.y())
             dist_curr = math.hypot(current_pos.x() - center.x(), current_pos.y() - center.y())
 
@@ -409,9 +447,6 @@ class SelectionTool(Tool):
                 break
 
         if changed:
-            # Usar el primer item para generar el comando (o un macro comando si fuera necesario)
-            # Como CommandMoveRotate maneja un solo item, necesitamos crear varios o agruparlos
-            # Por simplicidad, empujamos comandos individuales al stack (Qt los agrupa si son macro)
             self.main.undo_stack.beginMacro("Transformar Selección")
             for item, (old_pos, old_rot, old_scale) in self.items_start_state.items():
                 if item.pos() != old_pos or item.rotation() != old_rot or item.scale() != old_scale:
@@ -426,7 +461,6 @@ class SelectionTool(Tool):
 
 class PanTool(Tool):
     def activate(self):
-        # FIX: No deshabilitar interactividad, solo cambiar modo
         self.view.setDragMode(self.view.DragMode.ScrollHandDrag)
         self.view.setCursor(Qt.CursorShape.OpenHandCursor)
 
