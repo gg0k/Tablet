@@ -18,19 +18,23 @@ from custom_items import EditableTextItem
 from canvas_widget import VectorScene, EditorView
 from undo_commands import CommandAdd
 
+from tools import PenTool, EraserTool, TextTool, ZoomTool, SelectionTool, PanTool
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Notebook Vectorial Modular v1.0")
+        self.setWindowTitle("Notebook Vectorial Modular v1.2")
         self.resize(1300, 850)
 
         self.undo_stack = QUndoStack(self)
         self.settings = QSettings("MiEscuelaApp", "VectorNotebook")
 
-        # Configuración por defecto
-        self.herramienta_actual = Herramienta.LAPIZ
-        self.herramienta_previa_mano = None
+        self.color_actual = QColor("#000000")
+        self.grosor_lapiz = 3
+        self.suavizado_nivel = 30
+        self.grosor_borrador = 20
+        self.font_texto = QFont("Arial", 12)
 
         self.load_settings()
 
@@ -38,11 +42,23 @@ class MainWindow(QMainWindow):
         self.current_project_dir = None
 
         if not os.path.exists(ROOT_DIR):
-            os.makedirs(ROOT_DIR)
+            try:
+                os.makedirs(ROOT_DIR)
+            except Exception as e:
+                pass
 
         self.scene = VectorScene()
         self.view = EditorView(self.scene, self)
         self.setCentralWidget(self.view)
+
+        self.tools = {
+            Herramienta.LAPIZ: PenTool(self.view),
+            Herramienta.BORRADOR: EraserTool(self.view),
+            Herramienta.TEXTO: TextTool(self.view),
+            Herramienta.SELECCION: SelectionTool(self.view),
+            Herramienta.ZOOM: ZoomTool(self.view),
+            Herramienta.MOVER_CANVAS: PanTool(self.view)
+        }
 
         self.setup_docks()
         self.setup_toolbar()
@@ -50,13 +66,18 @@ class MainWindow(QMainWindow):
 
         self.refresh_tree()
         self.add_layer("Capa 1")
+
+        self.herramienta_actual = Herramienta.LAPIZ
+        self.herramienta_previa_mano = None
         self.set_herramienta(Herramienta.LAPIZ)
 
     def load_settings(self):
-        self.color_actual = QColor(self.settings.value("color", "#000000"))
+        val_color = self.settings.value("color", "#000000")
+        self.color_actual = QColor(val_color)
         self.grosor_lapiz = int(self.settings.value("grosor_lapiz", 3))
-        self.suavizado_nivel = int(self.settings.value("suavizado", 3))
+        self.suavizado_nivel = int(self.settings.value("suavizado", 30))
         self.grosor_borrador = int(self.settings.value("grosor_borrador", 20))
+
         font_family = self.settings.value("font_family", "Arial")
         font_size = int(self.settings.value("font_size", 12))
         self.font_texto = QFont(font_family, font_size)
@@ -177,13 +198,15 @@ class MainWindow(QMainWindow):
         spin_grosor.setValue(self.grosor_lapiz)
         spin_grosor.valueChanged.connect(self.set_grosor_lapiz)
 
+        self.lbl_suavizado = QLabel(f"{self.suavizado_nivel}%")
         slide_suavizado = QSlider(Qt.Orientation.Horizontal)
-        slide_suavizado.setRange(0, 20)
+        slide_suavizado.setRange(0, 100)
         slide_suavizado.setValue(self.suavizado_nivel)
-        slide_suavizado.valueChanged.connect(lambda v: setattr(self, 'suavizado_nivel', v))
+        slide_suavizado.valueChanged.connect(self.update_suavizado)
 
         form_lapiz.addRow("Grosor:", spin_grosor)
         form_lapiz.addRow("Suavizado:", slide_suavizado)
+        form_lapiz.addRow("", self.lbl_suavizado)
         panel_lapiz.setLayout(form_lapiz)
         self.stack_props.addWidget(panel_lapiz)
 
@@ -212,26 +235,18 @@ class MainWindow(QMainWindow):
         panel_texto.setLayout(form_texto)
         self.stack_props.addWidget(panel_texto)
 
-        # Panel Selección (Transformación & Corte)
+        # Panel Selección (Simplificado)
         panel_sel = QWidget()
         form_sel = QFormLayout()
 
-        btn_rotar_r = QPushButton("↻ +90°")
-        btn_rotar_r.clicked.connect(lambda: self.rotar_seleccion(90))
-
-        slider_scale = QSlider(Qt.Orientation.Horizontal)
-        slider_scale.setRange(10, 300)
-        slider_scale.setValue(100)
-        slider_scale.setToolTip("Escalar %")
-        slider_scale.sliderReleased.connect(lambda: slider_scale.setValue(100))
-        slider_scale.valueChanged.connect(lambda v: self.escalar_seleccion(v))
+        lbl_info = QLabel("Arrastra los puntos azules\npara transformar.")
+        lbl_info.setStyleSheet("color: #aaa; font-style: italic;")
 
         btn_cortar = QPushButton("✂️ Cortar Vector (Exp)")
         btn_cortar.setToolTip("Corta vectores usando el área de selección actual")
         btn_cortar.clicked.connect(self.cortar_seleccion_vectorial)
 
-        form_sel.addRow("Rotar:", btn_rotar_r)
-        form_sel.addRow("Escalar:", slider_scale)
+        form_sel.addRow(lbl_info)
         form_sel.addRow(btn_cortar)
         panel_sel.setLayout(form_sel)
         self.stack_props.addWidget(panel_sel)
@@ -283,11 +298,17 @@ class MainWindow(QMainWindow):
         btn_del_c.clicked.connect(self.eliminar_capa)
 
         btn_hide_c = QPushButton("👁️")
+        btn_hide_c.setToolTip("Ocultar/Mostrar")
         btn_hide_c.clicked.connect(self.toggle_capa_visibilidad)
+
+        btn_lock_c = QPushButton("🔒")
+        btn_lock_c.setToolTip("Bloquear/Desbloquear")
+        btn_lock_c.clicked.connect(self.toggle_capa_bloqueo)
 
         btns_capa.addWidget(btn_add_c)
         btns_capa.addWidget(btn_del_c)
         btns_capa.addWidget(btn_hide_c)
+        btns_capa.addWidget(btn_lock_c)
 
         layout_capas.addWidget(self.list_capas)
         layout_capas.addLayout(btns_capa)
@@ -310,8 +331,6 @@ class MainWindow(QMainWindow):
         btn_add_img.clicked.connect(self.dialogo_imagen)
         self.findChild(QToolBar).addWidget(btn_add_img)
 
-    # --- Lógica Herramientas ---
-
     def set_herramienta(self, herramienta):
         self.herramienta_actual = herramienta
 
@@ -326,55 +345,36 @@ class MainWindow(QMainWindow):
         }
         self.stack_props.setCurrentIndex(map_props.get(herramienta, 0))
 
-        if herramienta == Herramienta.MOVER_CANVAS:
-            self.view.setDragMode(self.view.DragMode.ScrollHandDrag)
-        elif herramienta == Herramienta.SELECCION:
-            self.view.setDragMode(self.view.DragMode.RubberBandDrag)
+        if herramienta in self.tools:
+            self.view.set_tool(self.tools[herramienta])
         else:
-            self.view.setDragMode(self.view.DragMode.NoDrag)
+            self.view.set_tool(None)
 
-        self.actualizar_cursor()
-
-    def actualizar_cursor(self):
-        if self.herramienta_actual == Herramienta.LAPIZ:
-            size = max(10, self.grosor_lapiz * 2)
-            pix = QPixmap(size, size)
-            pix.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(pix)
-            painter.setPen(QPen(Qt.GlobalColor.black))
-            painter.drawEllipse(1, 1, size - 2, size - 2)
-            painter.setBrush(QBrush(self.color_actual))
-            painter.drawEllipse(int(size / 2) - 2, int(size / 2) - 2, 4, 4)
-            painter.end()
-            self.view.setCursor(QCursor(pix))
-        elif self.herramienta_actual == Herramienta.ZOOM:
-            self.view.setCursor(Qt.CursorShape.CrossCursor)
-        elif self.herramienta_actual == Herramienta.TEXTO:
-            self.view.setCursor(Qt.CursorShape.IBeamCursor)
-        elif self.herramienta_actual == Herramienta.MOVER_CANVAS:
-            self.view.setCursor(Qt.CursorShape.OpenHandCursor)
-        else:
-            self.view.setCursor(Qt.CursorShape.ArrowCursor)
+    def update_suavizado(self, val):
+        self.suavizado_nivel = val
+        self.lbl_suavizado.setText(f"{val}%")
 
     def set_grosor_lapiz(self, val):
         self.grosor_lapiz = val
-        self.actualizar_cursor()
+        if self.herramienta_actual == Herramienta.LAPIZ:
+            self.tools[Herramienta.LAPIZ].update_cursor()
 
     def set_grosor_borrador(self, val):
         self.grosor_borrador = val
-        self.actualizar_cursor()
 
     def elegir_color(self):
         col = QColorDialog.getColor(self.color_actual, self)
         if col.isValid():
             self.color_actual = col
             self.btn_color_picker.setStyleSheet(f"background-color: {col.name()}; border: 2px solid #555;")
-            self.actualizar_cursor()
+            if self.herramienta_actual == Herramienta.LAPIZ:
+                self.tools[Herramienta.LAPIZ].update_cursor()
 
     def set_color_hex(self, hex_code):
         self.color_actual = QColor(hex_code)
         self.btn_color_picker.setStyleSheet(f"background-color: {hex_code}; border: 2px solid #555;")
-        self.actualizar_cursor()
+        if self.herramienta_actual == Herramienta.LAPIZ:
+            self.tools[Herramienta.LAPIZ].update_cursor()
 
     def dialogo_imagen(self):
         path, _ = QFileDialog.getOpenFileName(self, "Imagen", "", "Imagenes (*.png *.jpg *.jpeg)")
@@ -392,36 +392,21 @@ class MainWindow(QMainWindow):
 
         item = QGraphicsPixmapItem(pixmap)
         item.setPos(pos)
-
-        # Guardar ruta original para copiarla al guardar el proyecto
         item.setData(Qt.ItemDataRole.UserRole + 1, path)
 
         if pixmap.width() > 500:
             item.setScale(500 / pixmap.width())
 
         capa = self.get_current_layer()
-        if capa:
+        if capa and not capa.bloqueada:
             self.view.set_item_props(item)
             cmd = CommandAdd(self.scene, item, capa, self)
             self.undo_stack.push(cmd)
             self.set_herramienta(Herramienta.SELECCION)
 
-    # --- Selección: Transformación y Corte ---
-    def rotar_seleccion(self, angulo):
-        for item in self.scene.selectedItems():
-            center = item.boundingRect().center()
-            item.setTransformOriginPoint(center)
-            item.setRotation(item.rotation() + angulo)
-
-    def escalar_seleccion(self, porcentaje):
-        scale_factor = porcentaje / 100.0
-        for item in self.scene.selectedItems():
-            center = item.boundingRect().center()
-            item.setTransformOriginPoint(center)
-            if abs(item.scale() - scale_factor) > 0.01:
-                item.setScale(scale_factor)
-
     def cortar_seleccion_vectorial(self):
+        # Mantenemos esta función de utilidad aunque no esté en el sidebar principal
+        # para uso avanzado si es necesario, o la dejamos conectada al botón del panel
         from PyQt6.QtWidgets import QGraphicsPathItem
         selection_path = QPainterPath()
         selection_rect = self.scene.selectionArea().boundingRect()
@@ -435,38 +420,33 @@ class MainWindow(QMainWindow):
 
         for item in items_to_process:
             if isinstance(item, QGraphicsPathItem):
-                original_path = item.path()
+                capa = None
+                for c in self.capas:
+                    if item in c.items:
+                        capa = c
+                        break
 
+                if not capa or capa.bloqueada: continue
+
+                original_path = item.path()
                 path_inside = original_path.intersected(selection_path)
                 path_outside = original_path.subtracted(selection_path)
 
                 if not path_inside.isEmpty() and not path_outside.isEmpty():
-                    capa = None
-                    for c in self.capas:
-                        if item in c.items:
-                            capa = c
-                            break
+                    item_out = QGraphicsPathItem(path_outside)
+                    item_out.setPen(item.pen())
+                    item_out.setZValue(item.zValue())
+                    self.view.set_item_props(item_out)
 
-                    if capa:
-                        item_out = QGraphicsPathItem(path_outside)
-                        item_out.setPen(item.pen())
-                        item_out.setZValue(item.zValue())
-                        self.view.set_item_props(item_out)
+                    item_in = QGraphicsPathItem(path_inside)
+                    item_in.setPen(item.pen())
+                    item_in.setZValue(item.zValue())
+                    self.view.set_item_props(item_in)
 
-                        item_in = QGraphicsPathItem(path_inside)
-                        item_in.setPen(item.pen())
-                        item_in.setZValue(item.zValue())
-                        self.view.set_item_props(item_in)
+                    from undo_commands import CommandReplace
+                    cmd = CommandReplace(self.scene, item, [item_out, item_in], capa, self)
+                    self.undo_stack.push(cmd)
 
-                        self.scene.addItem(item_out)
-                        self.scene.addItem(item_in)
-                        capa.items.append(item_out)
-                        capa.items.append(item_in)
-
-                        self.scene.removeItem(item)
-                        capa.items.remove(item)
-
-    # --- Gestión de Capas ---
     def add_layer(self, nombre):
         capa = CapaData(nombre)
         self.capas.insert(0, capa)
@@ -495,20 +475,39 @@ class MainWindow(QMainWindow):
             for item in capa.items:
                 item.setVisible(capa.visible)
 
-            item_list = self.list_capas.item(row)
-            font = item_list.font()
-            font.setStrikeOut(not capa.visible)
-            item_list.setFont(font)
+            self.actualizar_estilo_capa(row)
+
+    def toggle_capa_bloqueo(self):
+        row = self.list_capas.currentRow()
+        if row != -1:
+            capa = self.capas[row]
+            capa.bloqueada = not capa.bloqueada
+            if capa.bloqueada:
+                for item in capa.items:
+                    item.setSelected(False)
+            self.actualizar_estilo_capa(row)
+
+    def actualizar_estilo_capa(self, row):
+        item_list = self.list_capas.item(row)
+        capa = self.capas[row]
+        font = item_list.font()
+        font.setStrikeOut(not capa.visible)
+        item_list.setFont(font)
+
+        texto = capa.nombre
+        if not capa.visible: texto += " (Oculta)"
+        if capa.bloqueada: texto += " 🔒"
+        item_list.setText(texto)
 
     def renombrar_capa(self, item):
-        old_name = item.text()
+        old_name = item.text().replace(" (Oculta)", "").replace(" 🔒", "")
         new_name, ok = QInputDialog.getText(self, "Renombrar Capa", "Nombre:", text=old_name)
         if ok and new_name:
-            item.setText(new_name)
             for c in self.capas:
                 if c.nombre == old_name:
                     c.nombre = new_name
                     break
+            self.actualizar_estilo_capa(self.list_capas.row(item))
 
     def on_capa_selected(self, index):
         pass
@@ -522,7 +521,8 @@ class MainWindow(QMainWindow):
     def reordenar_capas(self):
         nuevas_capas = []
         for i in range(self.list_capas.count()):
-            nombre = self.list_capas.item(i).text()
+            text_raw = self.list_capas.item(i).text()
+            nombre = text_raw.replace(" (Oculta)", "").replace(" 🔒", "")
             for c in self.capas:
                 if c.nombre == nombre:
                     nuevas_capas.append(c)
@@ -531,16 +531,20 @@ class MainWindow(QMainWindow):
         self.actualizar_z_values()
 
     def actualizar_z_values(self):
+        # Actualizar Z-Index basado en el orden de las capas
         total = len(self.capas)
         for i, capa in enumerate(self.capas):
+            # Capa 0 (UI) es la más alta.
+            # Damos un rango de 1000 por capa.
             base_z = (total - 1 - i) * 1000
             for j, item in enumerate(capa.items):
                 item.setZValue(base_z + j)
 
-    # --- Archivos (Sistema de Carpetas) ---
     def refresh_tree(self):
         self.tree_files.clear()
         try:
+            if not os.path.exists(ROOT_DIR):
+                return
             materias = [d for d in os.listdir(ROOT_DIR) if os.path.isdir(os.path.join(ROOT_DIR, d))]
             for mat in materias:
                 item_mat = QTreeWidgetItem([mat])
@@ -556,8 +560,8 @@ class MainWindow(QMainWindow):
                         item_mat.addChild(item_pag)
 
                 self.tree_files.addTopLevelItem(item_mat)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error refresh tree: {e}")
 
     def nueva_materia(self):
         nombre, ok = QInputDialog.getText(self, "Nueva Materia", "Nombre:")
@@ -608,67 +612,71 @@ class MainWindow(QMainWindow):
 
         data_to_save = {"capas": []}
 
-        for capa in self.capas:
-            layer_data = {
-                "nombre": capa.nombre,
-                "visible": capa.visible,
-                "items": []
-            }
-
-            for item in capa.items:
-                if item.scene() != self.scene: continue
-
-                item_data = {
-                    "pos_x": item.pos().x(),
-                    "pos_y": item.pos().y(),
-                    "rot": item.rotation(),
-                    "scale": item.scale(),
-                    "z": item.zValue()
+        try:
+            for c_idx, capa in enumerate(self.capas):
+                layer_data = {
+                    "nombre": capa.nombre,
+                    "visible": capa.visible,
+                    "items": []
                 }
 
-                if isinstance(item, QGraphicsPathItem):
-                    item_data["type"] = "path"
-                    path = item.path()
-                    elements = []
-                    for i in range(path.elementCount()):
-                        e = path.elementAt(i)
-                        elements.append({"t": int(e.type), "x": float(e.x), "y": float(e.y)})
+                for i_idx, item in enumerate(capa.items):
+                    if item.scene() != self.scene: continue
 
-                    item_data["path_elements"] = elements
-                    item_data["pen_color"] = item.pen().color().name()
-                    item_data["pen_width"] = item.pen().width()
+                    item_data = {
+                        "pos_x": item.pos().x(),
+                        "pos_y": item.pos().y(),
+                        "rot": item.rotation(),
+                        "scale": item.scale(),
+                        "z": item.zValue()
+                    }
 
-                elif isinstance(item, EditableTextItem) or isinstance(item, QGraphicsTextItem):
-                    item_data["type"] = "text"
-                    item_data["content"] = item.toPlainText()
-                    item_data["font_family"] = item.font().family()
-                    item_data["font_size"] = item.font().pointSize()
-                    item_data["color"] = item.defaultTextColor().name()
+                    if isinstance(item, QGraphicsPathItem):
+                        item_data["type"] = "path"
+                        path = item.path()
+                        if path is None: continue
 
-                elif isinstance(item, QGraphicsPixmapItem):
-                    item_data["type"] = "image"
-                    original_path = item.data(Qt.ItemDataRole.UserRole + 1)
-                    if original_path:
-                        filename = os.path.basename(original_path)
-                        dest_path = os.path.join(assets_dir, filename)
-                        if not os.path.exists(dest_path):
-                            try:
-                                shutil.copy2(original_path, dest_path)
-                            except:
-                                pass
-                        item_data["img_filename"] = filename
-                    else:
-                        filename = item.data(Qt.ItemDataRole.UserRole + 2)
-                        item_data["img_filename"] = filename
+                        elm_count = path.elementCount()
+                        elements = []
+                        for k in range(elm_count):
+                            e = path.elementAt(k)
+                            elements.append({"t": e.type.value, "x": float(e.x), "y": float(e.y)})
 
-                layer_data["items"].append(item_data)
+                        item_data["path_elements"] = elements
+                        item_data["pen_color"] = item.pen().color().name()
+                        item_data["pen_width"] = item.pen().width()
 
-            data_to_save["capas"].append(layer_data)
+                    elif isinstance(item, EditableTextItem) or isinstance(item, QGraphicsTextItem):
+                        item_data["type"] = "text"
+                        item_data["content"] = item.toPlainText()
+                        item_data["font_family"] = item.font().family()
+                        item_data["font_size"] = item.font().pointSize()
+                        item_data["color"] = item.defaultTextColor().name()
 
-        try:
+                    elif isinstance(item, QGraphicsPixmapItem):
+                        item_data["type"] = "image"
+                        original_path = item.data(Qt.ItemDataRole.UserRole + 1)
+                        if original_path:
+                            filename = os.path.basename(original_path)
+                            dest_path = os.path.join(assets_dir, filename)
+                            if not os.path.exists(dest_path):
+                                try:
+                                    shutil.copy2(original_path, dest_path)
+                                except:
+                                    pass
+                            item_data["img_filename"] = filename
+                        else:
+                            filename = item.data(Qt.ItemDataRole.UserRole + 2)
+                            item_data["img_filename"] = filename
+
+                    layer_data["items"].append(item_data)
+
+                data_to_save["capas"].append(layer_data)
+
             with open(json_path, 'w') as f:
                 json.dump(data_to_save, f)
-            self.statusBar().showMessage(f"Guardado en {os.path.basename(self.current_project_dir)}", 3000)
+            self.statusBar().showMessage(f"Guardado exitoso.", 3000)
+
         except Exception as e:
             QMessageBox.critical(self, "Error Fatal", f"No se pudo guardar: {e}")
 
@@ -699,14 +707,30 @@ class MainWindow(QMainWindow):
                     if item_data["type"] == "path":
                         path = QPainterPath()
                         elems = item_data.get("path_elements", [])
+
                         if elems:
                             path.moveTo(elems[0]["x"], elems[0]["y"])
-                            for i in range(1, len(elems)):
+                            i = 1
+                            while i < len(elems):
                                 e = elems[i]
-                                if e["t"] == 1:
+                                type_val = e["t"]
+
+                                if type_val == 1:
                                     path.lineTo(e["x"], e["y"])
-                                elif e["t"] == 2:
-                                    path.lineTo(e["x"], e["y"])
+                                    i += 1
+                                elif type_val == 2:
+                                    if i + 2 < len(elems):
+                                        cp1 = elems[i]
+                                        cp2 = elems[i + 1]
+                                        end = elems[i + 2]
+                                        path.cubicTo(cp1["x"], cp1["y"], cp2["x"], cp2["y"], end["x"], end["y"])
+                                        i += 3
+                                    else:
+                                        path.lineTo(e["x"], e["y"])
+                                        i += 1
+                                else:
+                                    path.moveTo(e["x"], e["y"])
+                                    i += 1
 
                         new_item = QGraphicsPathItem(path)
                         pen = QPen(QColor(item_data["pen_color"]))
