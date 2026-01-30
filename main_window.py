@@ -8,10 +8,11 @@ from datetime import datetime
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, QDockWidget,
                              QListWidget, QPushButton, QLabel, QSlider, QColorDialog, QFileDialog,
                              QTreeWidget, QTreeWidgetItem, QMessageBox, QComboBox, QSpinBox,
-                             QFontComboBox, QStackedWidget, QFormLayout, QInputDialog, QFrame)
+                             QFontComboBox, QStackedWidget, QFormLayout, QInputDialog, QFrame,
+                             QGraphicsItem)
 from PyQt6.QtCore import Qt, QSize, QSettings
 from PyQt6.QtGui import QIcon, QAction, QKeySequence, QPixmap, QPainter, QPen, QColor, QBrush, QFont, QCursor, \
-    QShortcut, QUndoStack, QPainterPath
+    QShortcut, QUndoStack, QPainterPath, QTransform
 
 from config import Herramienta, ROOT_DIR
 from data_models import CapaData
@@ -25,7 +26,7 @@ from tools import PenTool, EraserTool, TextTool, ZoomTool, SelectionTool, PanToo
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Notebook Vectorial Modular v1.3 (STABLE)")
+        self.setWindowTitle("Notebook Vectorial Modular v2.0 (Multi-Page)")
         self.resize(1300, 850)
 
         self.undo_stack = QUndoStack(self)
@@ -39,27 +40,23 @@ class MainWindow(QMainWindow):
 
         self.load_settings()
 
+        # --- GESTIÓN DE PÁGINAS ---
         self.capas = []
+        self.pages_data = []  # Lista de listas de capas (memoria de todas las páginas)
+        self.current_page_index = 0
         self.current_project_dir = None
-        self.current_materia_name = ""
-        self.current_fecha = ""
-        self.current_page_name = ""
 
-        print(f"DEBUG INIT: ROOT_DIR configurado en: {ROOT_DIR}")
+        # DEBUG INIT
         if not os.path.exists(ROOT_DIR):
             try:
                 os.makedirs(ROOT_DIR)
-                print(f"DEBUG INIT: ROOT_DIR creado exitosamente.")
             except Exception as e:
-                print(f"DEBUG INIT: Error creando ROOT_DIR: {e}")
                 pass
-        else:
-            print(f"DEBUG INIT: ROOT_DIR ya existe.")
 
         self.scene = VectorScene()
         self.view = EditorView(self.scene, self)
 
-        # --- NUEVO LAYOUT CENTRAL ---
+        # --- LAYOUT CENTRAL ---
         container = QWidget()
         layout_main = QVBoxLayout(container)
         layout_main.setContentsMargins(0, 0, 0, 0)
@@ -74,39 +71,60 @@ class MainWindow(QMainWindow):
         layout_pages = QHBoxLayout(self.page_controls)
         layout_pages.setContentsMargins(10, 5, 10, 5)
 
-        btn_prev_page = QPushButton("◀ Anterior")
-        btn_next_page = QPushButton("Siguiente ▶")
-        self.lbl_page_info = QLabel("Página: --")
-        self.lbl_page_info.setStyleSheet("color: white; font-weight: bold;")
+        self.btn_prev_page = QPushButton("◀ Anterior")
+        self.btn_prev_page.clicked.connect(self.prev_page)
 
-        btn_new_page_fast = QPushButton("➕ Nueva Pág")
-        btn_new_page_fast.clicked.connect(self.nueva_pagina)
+        self.btn_next_page = QPushButton("Siguiente ▶")
+        self.btn_next_page.clicked.connect(self.next_page)
 
-        layout_pages.addWidget(btn_prev_page)
+        self.lbl_page_info = QLabel("Página: 1 / 1")
+        self.lbl_page_info.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
+
+        self.btn_new_page_fast = QPushButton("➕ Nueva Pág")
+        self.btn_new_page_fast.clicked.connect(self.add_new_page_internal)
+        self.btn_new_page_fast.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+
+        layout_pages.addWidget(self.btn_prev_page)
         layout_pages.addStretch()
         layout_pages.addWidget(self.lbl_page_info)
         layout_pages.addStretch()
-        layout_pages.addWidget(btn_next_page)
-        layout_pages.addWidget(btn_new_page_fast)
+        layout_pages.addWidget(self.btn_next_page)
+        layout_pages.addWidget(self.btn_new_page_fast)
 
         layout_main.addWidget(self.page_controls)
         self.setCentralWidget(container)
 
         self.setup_docks()
-        self.setup_toolbar()  # Toolbar vacía primero
-        self.setup_tools()  # Inicializar herramientas y acciones
+        self.setup_toolbar()
+        self.setup_tools()
         self.setup_hotkeys()
 
         self.refresh_tree()
-        self.add_layer("Capa 1")
+
+        # Iniciar con una página en blanco por defecto en memoria
+        self.init_empty_state()
 
         self.herramienta_actual = Herramienta.LAPIZ
         self.herramienta_previa_mano = None
         self.set_herramienta(Herramienta.LAPIZ)
 
+        self.update_page_ui()
+
+    def init_empty_state(self):
+        """Reinicia el estado a una sesión vacía sin archivo."""
+        self.pages_data = []
+        self.current_page_index = 0
+        self.current_project_dir = None
+        self.scene.clear()
+        self.capas = []
+        self.list_capas.clear()
+        self.add_layer("Capa 1")
+        self.setWindowTitle("Notebook - Sin Guardar")
+        # Guardar el estado inicial de la pagina 1
+        self.save_current_page_to_memory()
+
     def setup_tools(self):
-        """Inicializa o Reinicializa las herramientas y sus conexiones"""
-        # Limpiar referencias antiguas si existen
+        """Inicializa las herramientas."""
         if hasattr(self, 'tools'):
             for tool in self.tools.values():
                 if hasattr(tool, 'deactivate'):
@@ -124,7 +142,6 @@ class MainWindow(QMainWindow):
             Herramienta.MOVER_CANVAS: PanTool(self.view)
         }
 
-        # Si la herramienta actual estaba seleccionada, reactivarla en el nuevo set
         if hasattr(self, 'herramienta_actual'):
             self.set_herramienta(self.herramienta_actual)
 
@@ -156,7 +173,7 @@ class MainWindow(QMainWindow):
             if self.herramienta_actual != Herramienta.MOVER_CANVAS:
                 self.herramienta_previa_mano = self.herramienta_actual
                 self.set_herramienta(Herramienta.MOVER_CANVAS)
-        # Delete key for selection
+
         if event.key() == Qt.Key.Key_Delete:
             if self.scene.selectedItems() and self.herramienta_actual == Herramienta.SELECCION:
                 items_to_del = []
@@ -178,7 +195,6 @@ class MainWindow(QMainWindow):
         super().keyReleaseEvent(event)
 
     def setup_toolbar(self):
-        # Crear Toolbar UNA SOLA VEZ
         if hasattr(self, 'main_toolbar'):
             return
 
@@ -240,12 +256,14 @@ class MainWindow(QMainWindow):
         btn_refresh.clicked.connect(self.refresh_tree)
         btn_new_subject = QPushButton("➕ Mat")
         btn_new_subject.clicked.connect(self.nueva_materia)
-        btn_new_page = QPushButton("📄 Hoy")
-        btn_new_page.clicked.connect(self.nueva_pagina)
+
+        # Boton "Hoy" ahora crea o abre la clase del día
+        btn_new_class = QPushButton("📄 Hoy")
+        btn_new_class.clicked.connect(self.crear_clase_hoy)
 
         h_files.addWidget(btn_refresh)
         h_files.addWidget(btn_new_subject)
-        h_files.addWidget(btn_new_page)
+        h_files.addWidget(btn_new_class)
         layout_org.addLayout(h_files)
         layout_org.addWidget(self.tree_files)
 
@@ -470,7 +488,7 @@ class MainWindow(QMainWindow):
         capa = self.get_current_layer()
         if capa and not capa.bloqueada:
             self.view.set_item_props(item)
-            cmd = CommandAdd(self.scene, item, capa, self.main)
+            cmd = CommandAdd(self.scene, item, capa, self)
             self.undo_stack.push(cmd)
             self.set_herramienta(Herramienta.SELECCION)
 
@@ -566,36 +584,28 @@ class MainWindow(QMainWindow):
 
     def refresh_tree(self):
         self.tree_files.clear()
-        print(f"DEBUG REFRESH: Iniciando escaneo en ROOT_DIR: {ROOT_DIR}")
         try:
             if not os.path.exists(ROOT_DIR):
-                print(f"DEBUG REFRESH ERROR: ROOT_DIR no existe en disco: {ROOT_DIR}")
                 return
 
             materias = [d for d in os.listdir(ROOT_DIR) if os.path.isdir(os.path.join(ROOT_DIR, d))]
-            print(f"DEBUG REFRESH: Materias detectadas: {materias}")
-
             for mat in materias:
                 item_mat = QTreeWidgetItem([mat])
                 item_mat.setIcon(0, QIcon(self.style().standardIcon(self.style().StandardPixmap.SP_DirIcon)))
                 path_mat = os.path.join(ROOT_DIR, mat)
 
-                paginas = [d for d in os.listdir(path_mat) if os.path.isdir(os.path.join(path_mat, d))]
-                # print(f"DEBUG REFRESH: Materia '{mat}' tiene subcarpetas: {paginas}")
-
-                for pag in paginas:
-                    full_path_pag = os.path.join(path_mat, pag)
-                    json_check = os.path.join(full_path_pag, "data.json")
+                clases = [d for d in os.listdir(path_mat) if os.path.isdir(os.path.join(path_mat, d))]
+                for clase in clases:
+                    full_path_clase = os.path.join(path_mat, clase)
+                    json_check = os.path.join(full_path_clase, "data.json")
                     if os.path.exists(json_check):
-                        # print(f"DEBUG REFRESH: Página VÁLIDA encontrada: {pag} (Path: {full_path_pag})")
-                        item_pag = QTreeWidgetItem([pag])
-                        item_pag.setIcon(0, QIcon(self.style().standardIcon(self.style().StandardPixmap.SP_FileIcon)))
-                        item_pag.setData(0, Qt.ItemDataRole.UserRole, full_path_pag)
-                        item_mat.addChild(item_pag)
+                        item_clase = QTreeWidgetItem([clase])
+                        item_clase.setIcon(0, QIcon(self.style().standardIcon(self.style().StandardPixmap.SP_FileIcon)))
+                        item_clase.setData(0, Qt.ItemDataRole.UserRole, full_path_clase)
+                        item_mat.addChild(item_clase)
 
                 self.tree_files.addTopLevelItem(item_mat)
         except Exception as e:
-            print(f"DEBUG REFRESH EXCEPTION: {e}")
             traceback.print_exc()
 
     def nueva_materia(self):
@@ -605,353 +615,358 @@ class MainWindow(QMainWindow):
             os.makedirs(path, exist_ok=True)
             self.refresh_tree()
 
-    def nueva_pagina(self):
+    # --- NUEVAS FUNCIONES DE PAGINACIÓN Y CLASE ---
+
+    def crear_clase_hoy(self):
+        """Crea una carpeta de clase para HOY dentro de la materia seleccionada."""
         item = self.tree_files.currentItem()
         if not item:
             QMessageBox.warning(self, "Error", "Selecciona una materia primero")
             return
 
-        # Encontrar el padre (Materia)
+        # Asegurarse que es una materia (item de nivel superior o padre)
         while item.parent():
             item = item.parent()
 
         materia_path = os.path.join(ROOT_DIR, item.text(0))
         fecha = datetime.now().strftime("%d-%m-%Y")
 
-        nombre_base = fecha
-        contador = 1
+        project_path = os.path.join(materia_path, fecha)
 
-        while os.path.exists(os.path.join(materia_path, f"{nombre_base}_Pag{contador}")):
-            contador += 1
+        # Si ya existe, abrimos, si no, creamos
+        if not os.path.exists(project_path):
+            try:
+                os.makedirs(project_path)
+                os.makedirs(os.path.join(project_path, "assets"))
 
-        project_name = f"{nombre_base}_Pag{contador}"
-        project_path = os.path.join(materia_path, project_name)
+                # Crear estructura inicial multipágina
+                initial_data = {
+                    "pages": [],  # Se llenará al guardar la primera vez o por defecto
+                    "version": "2.0"
+                }
 
-        try:
-            os.makedirs(project_path)
-            os.makedirs(os.path.join(project_path, "assets"))
+                with open(os.path.join(project_path, "data.json"), 'w') as f:
+                    json.dump(initial_data, f)
 
-            print(f"DEBUG NUEVA PAG: Creando proyecto en: {project_path}")
+                self.refresh_tree()
+            except Exception as e:
+                traceback.print_exc()
+                QMessageBox.critical(self, "Error", f"No se pudo crear la clase: {e}")
+                return
 
-            with open(os.path.join(project_path, "data.json"), 'w') as f:
-                json.dump({"capas": [], "meta": {"materia": item.text(0), "fecha": fecha, "pagina": str(contador)}}, f)
+        # Cargar el proyecto (nuevo o existente)
+        self.cargar_desde_archivo(project_path)
 
-            self.refresh_tree()
-            self.cargar_desde_archivo(project_path)
-        except Exception as e:
-            print(f"DEBUG NUEVA PAG ERROR: {e}")
-            traceback.print_exc()
+    def add_new_page_internal(self):
+        """Agrega una nueva página blanca dentro del archivo actual."""
+        if not self.current_project_dir:
+            return
+
+        # 1. Guardar la página actual en memoria
+        self.save_current_page_to_memory()
+
+        # 2. Crear una nueva página (lista de capas vacía)
+        new_page_layers = [{"nombre": "Capa 1", "visible": True, "items": []}]
+        self.pages_data.append(new_page_layers)
+
+        # 3. Moverse a la nueva página (que es la última)
+        self.load_page_from_memory(len(self.pages_data) - 1)
+
+        # Opcional: Auto-guardar para evitar perdida de datos si crashea
+        self.guardar_archivo()
+
+    def prev_page(self):
+        if self.current_page_index > 0:
+            self.save_current_page_to_memory()
+            self.load_page_from_memory(self.current_page_index - 1)
+
+    def next_page(self):
+        if self.current_page_index < len(self.pages_data) - 1:
+            self.save_current_page_to_memory()
+            self.load_page_from_memory(self.current_page_index + 1)
+
+    def save_current_page_to_memory(self):
+        """Serializa la escena actual y la guarda en self.pages_data[self.current_page_index]."""
+        page_layers = self.serialize_current_scene()
+
+        # Asegurar que pages_data sea lo suficientemente grande
+        while len(self.pages_data) <= self.current_page_index:
+            self.pages_data.append([])
+
+        self.pages_data[self.current_page_index] = page_layers
+
+    def serialize_current_scene(self):
+        """Convierte las capas y items de la escena actual a una lista de diccionarios."""
+        from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsTextItem, QGraphicsPixmapItem
+
+        serialized_layers = []
+        assets_dir = os.path.join(self.current_project_dir, "assets") if self.current_project_dir else ""
+        if assets_dir and not os.path.exists(assets_dir):
+            os.makedirs(assets_dir, exist_ok=True)
+
+        for capa in self.capas:
+            layer_data = {
+                "nombre": capa.nombre,
+                "visible": capa.visible,
+                "items": []
+            }
+
+            for item in capa.items:
+                try:
+                    if item.scene() != self.scene: continue
+
+                    item_data = {
+                        "pos_x": item.pos().x(),
+                        "pos_y": item.pos().y(),
+                        "rot": item.rotation(),
+                        "scale": item.scale(),
+                        "z": item.zValue()
+                    }
+
+                    # Transform matrix
+                    trans = item.transform()
+                    item_data.update({"m11": trans.m11(), "m12": trans.m12(), "m21": trans.m21(), "m22": trans.m22()})
+
+                    if isinstance(item, QGraphicsPathItem):
+                        item_data["type"] = "path"
+                        path = item.path()
+                        if not path: continue
+
+                        elements = []
+                        for k in range(path.elementCount()):
+                            e = path.elementAt(k)
+                            elements.append({"t": e.type.value, "x": float(e.x), "y": float(e.y)})
+                        item_data["path_elements"] = elements
+                        item_data["pen_color"] = item.pen().color().name()
+                        item_data["pen_width"] = item.pen().width()
+                        item_data["has_pen"] = item.pen().style() != Qt.PenStyle.NoPen
+                        item_data["has_fill"] = item.brush().style() != Qt.BrushStyle.NoBrush
+                        if item_data["has_fill"]:
+                            item_data["fill_color"] = item.brush().color().name()
+
+                    elif isinstance(item, (EditableTextItem, QGraphicsTextItem)):
+                        item_data["type"] = "text"
+                        item_data["content"] = item.toPlainText()
+                        item_data["font_family"] = item.font().family()
+                        item_data["font_size"] = item.font().pointSize()
+                        item_data["color"] = item.defaultTextColor().name()
+
+                    elif isinstance(item, QGraphicsPixmapItem):
+                        item_data["type"] = "image"
+                        # Lógica de imagen...
+                        original_path = item.data(Qt.ItemDataRole.UserRole + 1)
+                        filename = item.data(Qt.ItemDataRole.UserRole + 2)  # Filename guardado previamente
+
+                        if original_path and assets_dir:
+                            filename = os.path.basename(original_path)
+                            dest = os.path.join(assets_dir, filename)
+                            if not os.path.exists(dest):
+                                try:
+                                    shutil.copy2(original_path, dest)
+                                except:
+                                    pass
+
+                        item_data["img_filename"] = filename
+
+                    layer_data["items"].append(item_data)
+                except RuntimeError:
+                    continue
+
+            serialized_layers.append(layer_data)
+        return serialized_layers
+
+    def load_page_from_memory(self, page_index):
+        """Carga una página específica desde self.pages_data a la escena."""
+        if page_index < 0 or page_index >= len(self.pages_data):
+            return
+
+        # 1. Limpieza segura
+        if hasattr(self, 'view'):
+            self.view.set_tool(None)
+
+        self.scene.clearSelection()
+        self.scene.clear()
+        self.undo_stack.clear()
+        self.capas = []
+        self.list_capas.clear()
+
+        # 2. Cargar datos
+        self.current_page_index = page_index
+        layers_data = self.pages_data[page_index]
+        self.render_layers_to_scene(layers_data)
+
+        # 3. Restaurar UI y Herramientas
+        self.update_page_ui()
+        if hasattr(self, 'herramienta_actual'):
+            self.set_herramienta(self.herramienta_actual)
+
+    def render_layers_to_scene(self, layers_data):
+        """Reconstruye los objetos gráficos en la escena a partir de una lista de datos de capas."""
+        from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsPixmapItem
+
+        assets_dir = os.path.join(self.current_project_dir, "assets") if self.current_project_dir else ""
+
+        # Si no hay capas, crear una por defecto
+        if not layers_data:
+            self.add_layer("Capa 1")
+            return
+
+        for layer_data in reversed(layers_data):
+            self.add_layer(layer_data["nombre"])
+            current_capa = self.capas[0]
+            current_capa.visible = layer_data.get("visible", True)
+
+            for item_data in layer_data.get("items", []):
+                new_item = None
+                type_str = item_data["type"]
+
+                # ... Reconstrucción de items (Similar a antes, pero extraído) ...
+                if type_str == "path":
+                    path = QPainterPath()
+                    elems = item_data.get("path_elements", [])
+                    if elems:
+                        path.moveTo(elems[0]["x"], elems[0]["y"])
+                        i = 1
+                        while i < len(elems):
+                            e = elems[i]
+                            if e["t"] == 1:
+                                path.lineTo(e["x"], e["y"]); i += 1
+                            elif e["t"] == 2:
+                                if i + 2 < len(elems):
+                                    path.cubicTo(elems[i]["x"], elems[i]["y"], elems[i + 1]["x"], elems[i + 1]["y"],
+                                                 elems[i + 2]["x"], elems[i + 2]["y"])
+                                    i += 3
+                                else:
+                                    i += 1
+                            else:
+                                path.moveTo(e["x"], e["y"]); i += 1
+
+                    new_item = QGraphicsPathItem(path)
+                    if item_data.get("has_pen", True):
+                        pen = QPen(QColor(item_data["pen_color"]))
+                        pen.setWidth(item_data.get("pen_width", 1))
+                        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                        new_item.setPen(pen)
+                    else:
+                        new_item.setPen(QPen(Qt.PenStyle.NoPen))
+
+                    if item_data.get("has_fill", False):
+                        new_item.setBrush(QBrush(QColor(item_data["fill_color"])))
+
+                elif type_str == "text":
+                    new_item = EditableTextItem(item_data["content"])
+                    new_item.setFont(QFont(item_data["font_family"], item_data["font_size"]))
+                    new_item.setDefaultTextColor(QColor(item_data["color"]))
+
+                elif type_str == "image":
+                    fname = item_data.get("img_filename")
+                    if fname and assets_dir:
+                        ipath = os.path.join(assets_dir, fname)
+                        if os.path.exists(ipath):
+                            new_item = QGraphicsPixmapItem(QPixmap(ipath))
+                            new_item.setData(Qt.ItemDataRole.UserRole + 2, fname)
+
+                if new_item:
+                    new_item.setPos(item_data["pos_x"], item_data["pos_y"])
+                    new_item.setRotation(item_data.get("rot", 0))
+                    if "m11" in item_data:
+                        new_item.setTransform(
+                            QTransform(item_data["m11"], item_data["m12"], item_data["m21"], item_data["m22"], 0, 0))
+                    else:
+                        new_item.setScale(item_data.get("scale", 1))
+
+                    new_item.setZValue(item_data.get("z", 0))
+                    new_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+                    new_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+                    self.scene.addItem(new_item)
+                    current_capa.items.append(new_item)
+                    new_item.setVisible(current_capa.visible)
+
+        self.actualizar_z_values()
+
+    def update_page_ui(self):
+        total = len(self.pages_data)
+        current = self.current_page_index + 1
+        self.lbl_page_info.setText(f"Página: {current} / {max(1, total)}")
+        self.btn_prev_page.setEnabled(self.current_page_index > 0)
+        self.btn_next_page.setEnabled(self.current_page_index < len(self.pages_data) - 1)
 
     def abrir_archivo(self, item, col):
         path = item.data(0, Qt.ItemDataRole.UserRole)
-        print(f"DEBUG ABRIR: Click en '{item.text(0)}'. Path recuperado: {path}")
-
         if path and os.path.exists(path):
-            print(f"DEBUG ABRIR: Path existe. Cargando...")
             self.cargar_desde_archivo(path)
-        else:
-            print(f"DEBUG ABRIR ERROR: Path es None o no existe.")
 
     def guardar_archivo(self):
         try:
-            from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsTextItem, QGraphicsPixmapItem
-            print(f"DEBUG GUARDAR: ================= INICIO GUARDADO =================")
-            print(f"DEBUG GUARDAR: current_project_dir: {self.current_project_dir}")
-
             if not self.current_project_dir:
-                print("DEBUG GUARDAR ERROR: No hay directorio de proyecto seleccionado.")
                 QMessageBox.warning(self, "Error", "No hay un proyecto abierto para guardar.")
                 return
 
             json_path = os.path.join(self.current_project_dir, "data.json")
-            assets_dir = os.path.join(self.current_project_dir, "assets")
 
-            print(f"DEBUG GUARDAR: JSON destino: {json_path}")
+            # 1. Guardar la página actual en memoria antes de escribir a disco
+            self.save_current_page_to_memory()
 
-            # --- FIX CRITICO: Crear directorio si no existe ---
-            if not os.path.exists(assets_dir):
-                try:
-                    os.makedirs(assets_dir, exist_ok=True)
-                except Exception as e:
-                    print(f"DEBUG GUARDAR ERROR: Fallo creando assets folder: {e}")
-                    return
-
-            data_to_save = {
-                "capas": [],
-                "meta": {
-                    "materia": self.current_materia_name,
-                    "fecha": self.current_fecha,
-                    "pagina": self.current_page_name
-                }
+            # 2. Estructura de guardado V2
+            full_data = {
+                "version": "2.0",
+                "pages": self.pages_data
             }
 
-            for c_idx, capa in enumerate(self.capas):
-                layer_data = {
-                    "nombre": capa.nombre,
-                    "visible": capa.visible,
-                    "items": []
-                }
-
-                for item in capa.items:
-                    # FIX: Proteger acceso a items que podrían haber sido eliminados
-                    try:
-                        if item.scene() != self.scene:
-                            continue
-
-                        item_data = {
-                            "pos_x": item.pos().x(),
-                            "pos_y": item.pos().y(),
-                            "rot": item.rotation(),
-                            "scale": item.scale(),
-                            "z": item.zValue()
-                        }
-
-                        # Guardar Transformación completa
-                        trans = item.transform()
-                        item_data["m11"] = trans.m11()
-                        item_data["m12"] = trans.m12()
-                        item_data["m21"] = trans.m21()
-                        item_data["m22"] = trans.m22()
-
-                        if isinstance(item, QGraphicsPathItem):
-                            item_data["type"] = "path"
-                            path = item.path()
-                            if path is None: continue
-
-                            elm_count = path.elementCount()
-                            elements = []
-                            for k in range(elm_count):
-                                e = path.elementAt(k)
-                                elements.append({"t": e.type.value, "x": float(e.x), "y": float(e.y)})
-
-                            item_data["path_elements"] = elements
-                            item_data["pen_color"] = item.pen().color().name()
-                            item_data["pen_width"] = item.pen().width()
-                            item_data["has_pen"] = item.pen().style() != Qt.PenStyle.NoPen
-
-                            item_data["has_fill"] = item.brush().style() != Qt.BrushStyle.NoBrush
-                            if item_data["has_fill"]:
-                                item_data["fill_color"] = item.brush().color().name()
-
-                        elif isinstance(item, (EditableTextItem, QGraphicsTextItem)):
-                            item_data["type"] = "text"
-                            item_data["content"] = item.toPlainText()
-                            item_data["font_family"] = item.font().family()
-                            item_data["font_size"] = item.font().pointSize()
-                            item_data["color"] = item.defaultTextColor().name()
-
-                        elif isinstance(item, QGraphicsPixmapItem):
-                            item_data["type"] = "image"
-                            original_path = item.data(Qt.ItemDataRole.UserRole + 1)
-                            if original_path:
-                                filename = os.path.basename(original_path)
-                                dest_path = os.path.join(assets_dir, filename)
-                                # Copiar solo si no existe o es diferente
-                                if not os.path.exists(dest_path):
-                                    try:
-                                        shutil.copy2(original_path, dest_path)
-                                    except:
-                                        pass
-                                item_data["img_filename"] = filename
-                            else:
-                                filename = item.data(Qt.ItemDataRole.UserRole + 2)
-                                item_data["img_filename"] = filename
-
-                        layer_data["items"].append(item_data)
-                    except RuntimeError:
-                        # Objeto C++ ya eliminado
-                        continue
-
-                data_to_save["capas"].append(layer_data)
-
             with open(json_path, 'w') as f:
-                json.dump(data_to_save, f)
-            print("DEBUG GUARDAR: ================= FIN GUARDADO EXITOSO =================")
-            self.statusBar().showMessage(f"Guardado exitoso.", 3000)
+                json.dump(full_data, f)
+
+            self.statusBar().showMessage(f"Guardado exitoso (Multipage).", 3000)
 
         except Exception as e:
-            print(f"DEBUG GUARDAR EXCEPTION: {e}")
             traceback.print_exc()
             QMessageBox.critical(self, "Error Fatal", f"No se pudo guardar: {e}")
 
     def cargar_desde_archivo(self, project_path):
-        from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsPixmapItem
-        from PyQt6.QtGui import QTransform
-
-        print(f"DEBUG CARGAR: ================= INICIO CARGA =================")
-        print(f"DEBUG CARGAR: Path: {project_path}")
-
-        # === FIX CRÍTICO: Desconectar todo antes de limpiar ===
-        print("DEBUG CARGAR: Desactivando herramientas para evitar crash...")
-
-        # 1. Quitar herramienta de la vista (para que no reciba eventos)
-        if hasattr(self, 'view'):
-            self.view.set_tool(None)
-
-        # 2. Desactivar lógicamente las herramientas
-        if hasattr(self, 'tools'):
-            for tool in self.tools.values():
-                if hasattr(tool, 'deactivate'):
-                    try:
-                        tool.deactivate()
-                    except:
-                        pass
-
-        # 3. Limpiar selección explícitamente (evita disparar selectionChanged durante el clear)
-        self.scene.clearSelection()
-
-        print("DEBUG CARGAR: Limpiando escena...")
-        # 4. Ahora sí es seguro limpiar
-        self.scene.clear()
-
-        # Reiniciar variables de estado
-        self.undo_stack.clear()
-        self.capas = []
-        self.list_capas.clear()
-        self.setup_tools()  # Recrear herramientas frescas
+        """Carga un proyecto. Soporta formato v1 (solo capas) y v2 (paginas)."""
+        # Desactivar herramientas por seguridad durante carga
+        if hasattr(self, 'view'): self.view.set_tool(None)
 
         self.current_project_dir = project_path
         self.setWindowTitle(f"Notebook - {os.path.basename(project_path)}")
-
         json_path = os.path.join(project_path, "data.json")
-        assets_dir = os.path.join(project_path, "assets")
 
         try:
             if not os.path.exists(json_path):
-                print(f"DEBUG CARGAR ERROR: No existe data.json en {json_path}")
-                # Crear capa por defecto si está vacío
-                self.add_layer("Capa 1")
+                # Archivo nuevo / vacio
+                self.init_empty_state()
+                self.current_project_dir = project_path  # Restaurar path
+                self.pages_data = [[{"nombre": "Capa 1", "visible": True, "items": []}]]
+                self.load_page_from_memory(0)
                 return
 
-            print(f"DEBUG CARGAR: Leyendo JSON...")
             with open(json_path, 'r') as f:
                 data = json.load(f)
 
-            meta = data.get("meta", {})
-            self.current_materia_name = meta.get("materia", "")
-            self.current_fecha = meta.get("fecha", "")
-            self.current_page_name = meta.get("pagina", "")
+            # Detectar formato
+            if "pages" in data:
+                # Formato V2 Multi-page
+                self.pages_data = data["pages"]
+                if not self.pages_data: self.pages_data = [[{"nombre": "Capa 1", "visible": True, "items": []}]]
+            else:
+                # Formato V1 Legacy (Solo capas en root) -> Convertir a página 1
+                legacy_layers = data.get("capas", [])
+                self.pages_data = [legacy_layers]
 
-            print(f"DEBUG CARGAR: Meta recuperada - Mat: {self.current_materia_name}, Pag: {self.current_page_name}")
-
-            self.scene.set_metadata(self.current_materia_name, self.current_fecha, self.current_page_name)
-            self.lbl_page_info.setText(f"Página: {self.current_page_name}")
-
-            capas_data = data.get("capas", [])
-            print(f"DEBUG CARGAR: Capas encontradas en JSON: {len(capas_data)}")
-
-            for layer_data in reversed(capas_data):
-                l_name = layer_data["nombre"]
-                self.add_layer(l_name)
-                current_capa = self.capas[0]
-                current_capa.visible = layer_data.get("visible", True)
-
-                for item_data in layer_data.get("items", []):
-                    new_item = None
-                    type_str = item_data["type"]
-
-                    if type_str == "path":
-                        path = QPainterPath()
-                        elems = item_data.get("path_elements", [])
-
-                        if elems:
-                            # Asegurar movimiento inicial correcto
-                            if elems[0]["t"] == 0:  # MoveTo
-                                path.moveTo(elems[0]["x"], elems[0]["y"])
-                            else:
-                                path.moveTo(elems[0]["x"], elems[0]["y"])  # Fallback
-
-                            i = 1
-                            while i < len(elems):
-                                e = elems[i]
-                                type_val = e["t"]
-                                if type_val == 1:
-                                    path.lineTo(e["x"], e["y"])
-                                    i += 1
-                                elif type_val == 2:
-                                    if i + 2 < len(elems):
-                                        cp1 = elems[i]
-                                        cp2 = elems[i + 1]
-                                        end = elems[i + 2]
-                                        path.cubicTo(cp1["x"], cp1["y"], cp2["x"], cp2["y"], end["x"], end["y"])
-                                        i += 3
-                                    else:
-                                        path.lineTo(e["x"], e["y"])
-                                        i += 1
-                                else:
-                                    path.moveTo(e["x"], e["y"])
-                                    i += 1
-
-                        new_item = QGraphicsPathItem(path)
-
-                        if item_data.get("has_pen", True):
-                            pen = QPen(QColor(item_data["pen_color"]))
-                            pen.setWidth(item_data["pen_width"])
-                            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-                            new_item.setPen(pen)
-                        else:
-                            new_item.setPen(QPen(Qt.PenStyle.NoPen))
-
-                        if item_data.get("has_fill", False):
-                            new_item.setBrush(QBrush(QColor(item_data["fill_color"])))
-
-                    elif type_str == "text":
-                        new_item = EditableTextItem(item_data["content"])
-                        font = QFont(item_data["font_family"], item_data["font_size"])
-                        new_item.setFont(font)
-                        new_item.setDefaultTextColor(QColor(item_data["color"]))
-
-                    elif type_str == "image":
-                        filename = item_data.get("img_filename")
-                        if filename:
-                            img_path = os.path.join(assets_dir, filename)
-                            if os.path.exists(img_path):
-                                pixmap = QPixmap(img_path)
-                                new_item = QGraphicsPixmapItem(pixmap)
-                                new_item.setData(Qt.ItemDataRole.UserRole + 2, filename)
-                            else:
-                                print(f"DEBUG CARGAR ERROR: Imagen no encontrada en {img_path}")
-
-                    if new_item:
-                        new_item.setPos(item_data["pos_x"], item_data["pos_y"])
-                        new_item.setRotation(item_data.get("rot", 0))
-
-                        # Restaurar Transformacion Avanzada
-                        if "m11" in item_data:
-                            trans = QTransform(item_data["m11"], item_data["m12"],
-                                               item_data["m21"], item_data["m22"],
-                                               0, 0)
-                            new_item.setTransform(trans)
-                        else:
-                            new_item.setScale(item_data.get("scale", 1))
-
-                        z_val = item_data.get("z", 0)
-                        new_item.setZValue(z_val)
-
-                        self.view.set_item_props(new_item)
-                        self.scene.addItem(new_item)
-                        current_capa.items.append(new_item)
-                        new_item.setVisible(current_capa.visible)
-
-            self.actualizar_z_values()
-            print("DEBUG CARGAR: ================= FIN CARGA EXITOSA =================")
-
-            if not self.capas:
-                self.add_layer("Capa 1")
+            # Cargar la primera página
+            self.load_page_from_memory(0)
 
         except Exception as e:
-            print(f"DEBUG CARGAR EXCEPTION: {e}")
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error de carga: {e}")
-            if not self.capas: self.add_layer("Capa 1")
+            self.init_empty_state()
 
     def borrar_archivo(self):
         if not self.current_project_dir:
             return
         if QMessageBox.question(self, "Borrar",
-                                "¿Seguro que quieres borrar toda esta página?") == QMessageBox.StandardButton.Yes:
+                                "¿Seguro que quieres borrar toda esta clase?") == QMessageBox.StandardButton.Yes:
             shutil.rmtree(self.current_project_dir)
-            self.scene.clear()
-            self.current_project_dir = None
+            self.init_empty_state()
             self.refresh_tree()
