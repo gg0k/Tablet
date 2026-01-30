@@ -2,12 +2,13 @@ import sys
 import json
 import os
 import shutil
+import traceback
 from datetime import datetime
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, QDockWidget,
                              QListWidget, QPushButton, QLabel, QSlider, QColorDialog, QFileDialog,
                              QTreeWidget, QTreeWidgetItem, QMessageBox, QComboBox, QSpinBox,
-                             QFontComboBox, QStackedWidget, QFormLayout, QInputDialog)
+                             QFontComboBox, QStackedWidget, QFormLayout, QInputDialog, QFrame)
 from PyQt6.QtCore import Qt, QSize, QSettings
 from PyQt6.QtGui import QIcon, QAction, QKeySequence, QPixmap, QPainter, QPen, QColor, QBrush, QFont, QCursor, \
     QShortcut, QUndoStack, QPainterPath
@@ -24,7 +25,7 @@ from tools import PenTool, EraserTool, TextTool, ZoomTool, SelectionTool, PanToo
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Notebook Vectorial Modular v1.2")
+        self.setWindowTitle("Notebook Vectorial Modular v1.3")
         self.resize(1300, 850)
 
         self.undo_stack = QUndoStack(self)
@@ -40,16 +41,72 @@ class MainWindow(QMainWindow):
 
         self.capas = []
         self.current_project_dir = None
+        self.current_materia_name = ""
+        self.current_fecha = ""
+        self.current_page_name = ""
 
         if not os.path.exists(ROOT_DIR):
             try:
                 os.makedirs(ROOT_DIR)
             except Exception as e:
+                print(f"DEBUG INIT: Error creando ROOT_DIR: {e}")
                 pass
 
         self.scene = VectorScene()
         self.view = EditorView(self.scene, self)
-        self.setCentralWidget(self.view)
+
+        # --- NUEVO LAYOUT CENTRAL ---
+        container = QWidget()
+        layout_main = QVBoxLayout(container)
+        layout_main.setContentsMargins(0, 0, 0, 0)
+        layout_main.setSpacing(0)
+
+        layout_main.addWidget(self.view)
+
+        # Barra de Páginas
+        self.page_controls = QFrame()
+        self.page_controls.setFixedHeight(50)
+        self.page_controls.setStyleSheet("background-color: #3c3f41; border-top: 1px solid #555;")
+        layout_pages = QHBoxLayout(self.page_controls)
+        layout_pages.setContentsMargins(10, 5, 10, 5)
+
+        btn_prev_page = QPushButton("◀ Anterior")
+        btn_next_page = QPushButton("Siguiente ▶")
+        self.lbl_page_info = QLabel("Página: --")
+        self.lbl_page_info.setStyleSheet("color: white; font-weight: bold;")
+
+        btn_new_page_fast = QPushButton("➕ Nueva Pág")
+        btn_new_page_fast.clicked.connect(self.nueva_pagina)
+
+        layout_pages.addWidget(btn_prev_page)
+        layout_pages.addStretch()
+        layout_pages.addWidget(self.lbl_page_info)
+        layout_pages.addStretch()
+        layout_pages.addWidget(btn_next_page)
+        layout_pages.addWidget(btn_new_page_fast)
+
+        layout_main.addWidget(self.page_controls)
+        self.setCentralWidget(container)
+
+        self.setup_docks()
+        self.setup_toolbar()  # Toolbar vacía primero
+        self.setup_tools()  # Inicializar herramientas y acciones
+        self.setup_hotkeys()
+
+        self.refresh_tree()
+        self.add_layer("Capa 1")
+
+        self.herramienta_actual = Herramienta.LAPIZ
+        self.herramienta_previa_mano = None
+        self.set_herramienta(Herramienta.LAPIZ)
+
+    def setup_tools(self):
+        """Inicializa o Reinicializa las herramientas y sus conexiones"""
+        # Limpiar referencias antiguas si existen
+        if hasattr(self, 'tools'):
+            for tool in self.tools.values():
+                if hasattr(tool, 'deactivate'):
+                    tool.deactivate()
 
         self.tools = {
             Herramienta.LAPIZ: PenTool(self.view),
@@ -60,16 +117,9 @@ class MainWindow(QMainWindow):
             Herramienta.MOVER_CANVAS: PanTool(self.view)
         }
 
-        self.setup_docks()
-        self.setup_toolbar()
-        self.setup_hotkeys()
-
-        self.refresh_tree()
-        self.add_layer("Capa 1")
-
-        self.herramienta_actual = Herramienta.LAPIZ
-        self.herramienta_previa_mano = None
-        self.set_herramienta(Herramienta.LAPIZ)
+        # Si la herramienta actual estaba seleccionada, reactivarla en el nuevo set
+        if hasattr(self, 'herramienta_actual'):
+            self.set_herramienta(self.herramienta_actual)
 
     def load_settings(self):
         val_color = self.settings.value("color", "#000000")
@@ -99,6 +149,18 @@ class MainWindow(QMainWindow):
             if self.herramienta_actual != Herramienta.MOVER_CANVAS:
                 self.herramienta_previa_mano = self.herramienta_actual
                 self.set_herramienta(Herramienta.MOVER_CANVAS)
+        # Delete key for selection
+        if event.key() == Qt.Key.Key_Delete:
+            if self.scene.selectedItems() and self.herramienta_actual == Herramienta.SELECCION:
+                items_to_del = []
+                for item in self.scene.selectedItems():
+                    for c in self.capas:
+                        if item in c.items and not c.bloqueada:
+                            items_to_del.append((item, c))
+                if items_to_del:
+                    from undo_commands import CommandDelete
+                    self.undo_stack.push(CommandDelete(self.scene, items_to_del, self))
+
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
@@ -109,11 +171,15 @@ class MainWindow(QMainWindow):
         super().keyReleaseEvent(event)
 
     def setup_toolbar(self):
-        toolbar = QToolBar("Herramientas")
-        toolbar.setOrientation(Qt.Orientation.Vertical)
-        toolbar.setIconSize(QSize(32, 32))
-        toolbar.setMovable(False)
-        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, toolbar)
+        # Crear Toolbar UNA SOLA VEZ
+        if hasattr(self, 'main_toolbar'):
+            return
+
+        self.main_toolbar = QToolBar("Herramientas")
+        self.main_toolbar.setOrientation(Qt.Orientation.Vertical)
+        self.main_toolbar.setIconSize(QSize(32, 32))
+        self.main_toolbar.setMovable(False)
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.main_toolbar)
 
         self.action_group = {}
 
@@ -122,7 +188,7 @@ class MainWindow(QMainWindow):
             action.setCheckable(True)
             action.setToolTip(name)
             action.triggered.connect(lambda: self.set_herramienta(tool_enum))
-            toolbar.addAction(action)
+            self.main_toolbar.addAction(action)
             self.action_group[tool_enum] = action
             return action
 
@@ -134,17 +200,21 @@ class MainWindow(QMainWindow):
         add_tool_action("Zoom (Z)", "🔍", Herramienta.ZOOM)
         add_tool_action("Mano (Espacio)", "📄", Herramienta.MOVER_CANVAS)
 
-        toolbar.addSeparator()
+        self.main_toolbar.addSeparator()
 
         action_undo = self.undo_stack.createUndoAction(self, "Deshacer")
         action_undo.setShortcut(QKeySequence.StandardKey.Undo)
         action_undo.setIconText("↩️")
-        toolbar.addAction(action_undo)
+        self.main_toolbar.addAction(action_undo)
 
         action_redo = self.undo_stack.createRedoAction(self, "Rehacer")
         action_redo.setShortcut(QKeySequence.StandardKey.Redo)
         action_redo.setIconText("↪️")
-        toolbar.addAction(action_redo)
+        self.main_toolbar.addAction(action_redo)
+
+        btn_add_img = QPushButton("Insertar Imagen")
+        btn_add_img.clicked.connect(self.dialogo_imagen)
+        self.main_toolbar.addWidget(btn_add_img)
 
     def setup_docks(self):
         # 1. Dock Organizador
@@ -235,19 +305,14 @@ class MainWindow(QMainWindow):
         panel_texto.setLayout(form_texto)
         self.stack_props.addWidget(panel_texto)
 
-        # Panel Selección (Simplificado)
+        # Panel Selección
         panel_sel = QWidget()
         form_sel = QFormLayout()
 
         lbl_info = QLabel("Arrastra los puntos azules\npara transformar.")
         lbl_info.setStyleSheet("color: #aaa; font-style: italic;")
 
-        btn_cortar = QPushButton("✂️ Cortar Vector (Exp)")
-        btn_cortar.setToolTip("Corta vectores usando el área de selección actual")
-        btn_cortar.clicked.connect(self.cortar_seleccion_vectorial)
-
         form_sel.addRow(lbl_info)
-        form_sel.addRow(btn_cortar)
         panel_sel.setLayout(form_sel)
         self.stack_props.addWidget(panel_sel)
 
@@ -264,7 +329,7 @@ class MainWindow(QMainWindow):
         self.btn_color_picker.clicked.connect(self.elegir_color)
 
         grid_colores = QHBoxLayout()
-        colores = ["#000000", "#FF0000", "#0000FF", "#008000", "#FFFF00"]
+        colores = ["#000000", "#FF0000", "#0000FF", "#008000", "#FFFF00", "#FFFFFF"]
         for c in colores:
             btn = QPushButton()
             btn.setFixedSize(20, 20)
@@ -327,10 +392,6 @@ class MainWindow(QMainWindow):
         hk("S", lambda: self.set_herramienta(Herramienta.SELECCION))
         hk("Z", lambda: self.set_herramienta(Herramienta.ZOOM))
 
-        btn_add_img = QPushButton("Insertar Imagen")
-        btn_add_img.clicked.connect(self.dialogo_imagen)
-        self.findChild(QToolBar).addWidget(btn_add_img)
-
     def set_herramienta(self, herramienta):
         self.herramienta_actual = herramienta
 
@@ -361,6 +422,8 @@ class MainWindow(QMainWindow):
 
     def set_grosor_borrador(self, val):
         self.grosor_borrador = val
+        if self.herramienta_actual == Herramienta.BORRADOR:
+            self.tools[Herramienta.BORRADOR].update_cursor()
 
     def elegir_color(self):
         col = QColorDialog.getColor(self.color_actual, self)
@@ -403,49 +466,6 @@ class MainWindow(QMainWindow):
             cmd = CommandAdd(self.scene, item, capa, self)
             self.undo_stack.push(cmd)
             self.set_herramienta(Herramienta.SELECCION)
-
-    def cortar_seleccion_vectorial(self):
-        # Mantenemos esta función de utilidad aunque no esté en el sidebar principal
-        # para uso avanzado si es necesario, o la dejamos conectada al botón del panel
-        from PyQt6.QtWidgets import QGraphicsPathItem
-        selection_path = QPainterPath()
-        selection_rect = self.scene.selectionArea().boundingRect()
-        if selection_rect.isEmpty():
-            return
-        selection_path.addRect(selection_rect)
-
-        items_to_process = self.scene.selectedItems()
-        if not items_to_process:
-            items_to_process = self.scene.items(selection_path)
-
-        for item in items_to_process:
-            if isinstance(item, QGraphicsPathItem):
-                capa = None
-                for c in self.capas:
-                    if item in c.items:
-                        capa = c
-                        break
-
-                if not capa or capa.bloqueada: continue
-
-                original_path = item.path()
-                path_inside = original_path.intersected(selection_path)
-                path_outside = original_path.subtracted(selection_path)
-
-                if not path_inside.isEmpty() and not path_outside.isEmpty():
-                    item_out = QGraphicsPathItem(path_outside)
-                    item_out.setPen(item.pen())
-                    item_out.setZValue(item.zValue())
-                    self.view.set_item_props(item_out)
-
-                    item_in = QGraphicsPathItem(path_inside)
-                    item_in.setPen(item.pen())
-                    item_in.setZValue(item.zValue())
-                    self.view.set_item_props(item_in)
-
-                    from undo_commands import CommandReplace
-                    cmd = CommandReplace(self.scene, item, [item_out, item_in], capa, self)
-                    self.undo_stack.push(cmd)
 
     def add_layer(self, nombre):
         capa = CapaData(nombre)
@@ -531,12 +551,9 @@ class MainWindow(QMainWindow):
         self.actualizar_z_values()
 
     def actualizar_z_values(self):
-        # Actualizar Z-Index basado en el orden de las capas
         total = len(self.capas)
         for i, capa in enumerate(self.capas):
-            # Capa 0 (UI) es la más alta.
-            # Damos un rango de 1000 por capa.
-            base_z = (total - 1 - i) * 1000
+            base_z = (total - 1 - i) * 10000
             for j, item in enumerate(capa.items):
                 item.setZValue(base_z + j)
 
@@ -544,6 +561,7 @@ class MainWindow(QMainWindow):
         self.tree_files.clear()
         try:
             if not os.path.exists(ROOT_DIR):
+                print(f"DEBUG: ROOT_DIR no existe {ROOT_DIR}")
                 return
             materias = [d for d in os.listdir(ROOT_DIR) if os.path.isdir(os.path.join(ROOT_DIR, d))]
             for mat in materias:
@@ -562,6 +580,7 @@ class MainWindow(QMainWindow):
                 self.tree_files.addTopLevelItem(item_mat)
         except Exception as e:
             print(f"Error refresh tree: {e}")
+            traceback.print_exc()
 
     def nueva_materia(self):
         nombre, ok = QInputDialog.getText(self, "Nueva Materia", "Nombre:")
@@ -575,6 +594,8 @@ class MainWindow(QMainWindow):
         if not item:
             QMessageBox.warning(self, "Error", "Selecciona una materia primero")
             return
+
+        # Encontrar el padre (Materia)
         while item.parent():
             item = item.parent()
 
@@ -583,36 +604,63 @@ class MainWindow(QMainWindow):
 
         nombre_base = fecha
         contador = 1
-        while os.path.exists(os.path.join(materia_path, nombre_base)):
-            nombre_base = f"{fecha}_{contador}"
+
+        while os.path.exists(os.path.join(materia_path, f"{nombre_base}_Pag{contador}")):
             contador += 1
 
-        project_path = os.path.join(materia_path, nombre_base)
+        project_name = f"{nombre_base}_Pag{contador}"
+        project_path = os.path.join(materia_path, project_name)
+
         os.makedirs(project_path)
         os.makedirs(os.path.join(project_path, "assets"))
 
         with open(os.path.join(project_path, "data.json"), 'w') as f:
-            json.dump({"capas": []}, f)
+            json.dump({"capas": [], "meta": {"materia": item.text(0), "fecha": fecha, "pagina": str(contador)}}, f)
 
+        print(f"DEBUG: Nueva página creada en {project_path}")
         self.refresh_tree()
         self.cargar_desde_archivo(project_path)
 
     def abrir_archivo(self, item, col):
         path = item.data(0, Qt.ItemDataRole.UserRole)
         if path and os.path.exists(path):
+            print(f"DEBUG: Intentando abrir archivo: {path}")
             self.cargar_desde_archivo(path)
 
     def guardar_archivo(self):
-        from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsTextItem, QGraphicsPixmapItem
-        if not self.current_project_dir:
-            return
-
-        json_path = os.path.join(self.current_project_dir, "data.json")
-        assets_dir = os.path.join(self.current_project_dir, "assets")
-
-        data_to_save = {"capas": []}
-
         try:
+            from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsTextItem, QGraphicsPixmapItem
+            print(f"DEBUG GUARDAR: Iniciando guardado...")
+
+            if not self.current_project_dir:
+                print("DEBUG GUARDAR ERROR: No hay directorio de proyecto actual.")
+                return
+
+            json_path = os.path.join(self.current_project_dir, "data.json")
+            assets_dir = os.path.join(self.current_project_dir, "assets")
+
+            print(f"DEBUG GUARDAR: JSON Path: {json_path}")
+            print(f"DEBUG GUARDAR: Assets Dir: {assets_dir}")
+
+            # --- FIX CRITICO CRASH: Crear directorio si no existe ---
+            if not os.path.exists(assets_dir):
+                try:
+                    os.makedirs(assets_dir, exist_ok=True)
+                    print("DEBUG GUARDAR: Carpeta assets creada.")
+                except Exception as e:
+                    print(f"DEBUG GUARDAR ERROR: Fallo creando assets folder: {e}")
+                    QMessageBox.critical(self, "Error", f"No se pudo crear carpeta assets: {e}")
+                    return
+
+            data_to_save = {
+                "capas": [],
+                "meta": {
+                    "materia": self.current_materia_name,
+                    "fecha": self.current_fecha,
+                    "pagina": self.current_page_name
+                }
+            }
+
             for c_idx, capa in enumerate(self.capas):
                 layer_data = {
                     "nombre": capa.nombre,
@@ -620,7 +668,7 @@ class MainWindow(QMainWindow):
                     "items": []
                 }
 
-                for i_idx, item in enumerate(capa.items):
+                for item in capa.items:
                     if item.scene() != self.scene: continue
 
                     item_data = {
@@ -630,6 +678,13 @@ class MainWindow(QMainWindow):
                         "scale": item.scale(),
                         "z": item.zValue()
                     }
+
+                    # Guardar Transformación completa (para espejos)
+                    trans = item.transform()
+                    item_data["m11"] = trans.m11()
+                    item_data["m12"] = trans.m12()
+                    item_data["m21"] = trans.m21()
+                    item_data["m22"] = trans.m22()
 
                     if isinstance(item, QGraphicsPathItem):
                         item_data["type"] = "path"
@@ -645,8 +700,13 @@ class MainWindow(QMainWindow):
                         item_data["path_elements"] = elements
                         item_data["pen_color"] = item.pen().color().name()
                         item_data["pen_width"] = item.pen().width()
+                        item_data["has_pen"] = item.pen().style() != Qt.PenStyle.NoPen
 
-                    elif isinstance(item, EditableTextItem) or isinstance(item, QGraphicsTextItem):
+                        item_data["has_fill"] = item.brush().style() != Qt.BrushStyle.NoBrush
+                        if item_data["has_fill"]:
+                            item_data["fill_color"] = item.brush().color().name()
+
+                    elif isinstance(item, (EditableTextItem, QGraphicsTextItem)):
                         item_data["type"] = "text"
                         item_data["content"] = item.toPlainText()
                         item_data["font_family"] = item.font().family()
@@ -659,11 +719,12 @@ class MainWindow(QMainWindow):
                         if original_path:
                             filename = os.path.basename(original_path)
                             dest_path = os.path.join(assets_dir, filename)
+                            # Copiar solo si no existe o es diferente
                             if not os.path.exists(dest_path):
                                 try:
                                     shutil.copy2(original_path, dest_path)
-                                except:
-                                    pass
+                                except Exception as e:
+                                    print(f"Error copiando imagen: {e}")
                             item_data["img_filename"] = filename
                         else:
                             filename = item.data(Qt.ItemDataRole.UserRole + 2)
@@ -675,14 +736,26 @@ class MainWindow(QMainWindow):
 
             with open(json_path, 'w') as f:
                 json.dump(data_to_save, f)
+            print("DEBUG GUARDAR: Archivo guardado exitosamente.")
             self.statusBar().showMessage(f"Guardado exitoso.", 3000)
 
         except Exception as e:
+            print(f"DEBUG CRASH GUARDADO: {e}")
+            traceback.print_exc()
             QMessageBox.critical(self, "Error Fatal", f"No se pudo guardar: {e}")
 
     def cargar_desde_archivo(self, project_path):
         from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsPixmapItem
+        from PyQt6.QtGui import QTransform
+
+        print(f"DEBUG CARGAR: Iniciando carga desde {project_path}")
         self.scene.clear()
+
+        # --- FIX CRITICO CRASH: Reiniciar herramientas después de clear ---
+        # self.scene.clear() destruye los items, incluyendo el Gizmo que SelectionTool
+        # creó en el inicio. Si no reiniciamos, SelectionTool usa un puntero muerto.
+        self.setup_tools()
+
         self.undo_stack.clear()
         self.capas = []
         self.list_capas.clear()
@@ -693,8 +766,20 @@ class MainWindow(QMainWindow):
         assets_dir = os.path.join(project_path, "assets")
 
         try:
+            if not os.path.exists(json_path):
+                print(f"DEBUG CARGAR ERROR: No existe data.json en {json_path}")
+                return
+
             with open(json_path, 'r') as f:
                 data = json.load(f)
+
+            meta = data.get("meta", {})
+            self.current_materia_name = meta.get("materia", "")
+            self.current_fecha = meta.get("fecha", "")
+            self.current_page_name = meta.get("pagina", "")
+
+            self.scene.set_metadata(self.current_materia_name, self.current_fecha, self.current_page_name)
+            self.lbl_page_info.setText(f"Página: {self.current_page_name}")
 
             capas_data = data.get("capas", [])
             for layer_data in reversed(capas_data):
@@ -709,12 +794,16 @@ class MainWindow(QMainWindow):
                         elems = item_data.get("path_elements", [])
 
                         if elems:
-                            path.moveTo(elems[0]["x"], elems[0]["y"])
+                            # Asegurar movimiento inicial correcto
+                            if elems[0]["t"] == 0:  # MoveTo
+                                path.moveTo(elems[0]["x"], elems[0]["y"])
+                            else:
+                                path.moveTo(elems[0]["x"], elems[0]["y"])  # Fallback
+
                             i = 1
                             while i < len(elems):
                                 e = elems[i]
                                 type_val = e["t"]
-
                                 if type_val == 1:
                                     path.lineTo(e["x"], e["y"])
                                     i += 1
@@ -733,11 +822,18 @@ class MainWindow(QMainWindow):
                                     i += 1
 
                         new_item = QGraphicsPathItem(path)
-                        pen = QPen(QColor(item_data["pen_color"]))
-                        pen.setWidth(item_data["pen_width"])
-                        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-                        new_item.setPen(pen)
+
+                        if item_data.get("has_pen", True):
+                            pen = QPen(QColor(item_data["pen_color"]))
+                            pen.setWidth(item_data["pen_width"])
+                            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                            new_item.setPen(pen)
+                        else:
+                            new_item.setPen(QPen(Qt.PenStyle.NoPen))
+
+                        if item_data.get("has_fill", False):
+                            new_item.setBrush(QBrush(QColor(item_data["fill_color"])))
 
                     elif item_data["type"] == "text":
                         new_item = EditableTextItem(item_data["content"])
@@ -757,17 +853,33 @@ class MainWindow(QMainWindow):
                     if new_item:
                         new_item.setPos(item_data["pos_x"], item_data["pos_y"])
                         new_item.setRotation(item_data.get("rot", 0))
-                        new_item.setScale(item_data.get("scale", 1))
+
+                        # Restaurar Transformacion Avanzada (Espejo)
+                        if "m11" in item_data:
+                            trans = QTransform(item_data["m11"], item_data["m12"],
+                                               item_data["m21"], item_data["m22"],
+                                               0, 0)  # Posición ya seteada con setPos
+                            new_item.setTransform(trans)
+                        else:
+                            new_item.setScale(item_data.get("scale", 1))
+
+                        z_val = item_data.get("z", 0)
+                        new_item.setZValue(z_val)
 
                         self.view.set_item_props(new_item)
                         self.scene.addItem(new_item)
                         current_capa.items.append(new_item)
                         new_item.setVisible(current_capa.visible)
 
+            self.actualizar_z_values()
+            print("DEBUG CARGAR: Carga finalizada correctamente.")
+
             if not self.capas:
                 self.add_layer("Capa 1")
 
         except Exception as e:
+            print(f"DEBUG CRASH CARGAR: {e}")
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error de carga: {e}")
             if not self.capas: self.add_layer("Capa 1")
 

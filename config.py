@@ -2,8 +2,8 @@ import os
 from PyQt6.QtCore import QStandardPaths
 
 # Constantes Globales
-ANCHO_LIENZO = 720
-ALTO_LIENZO = 1280
+ANCHO_LIENZO = 794  # A4 aprox a 96dpi (210mm)
+ALTO_LIENZO = 1123  # A4 aprox a 96dpi (297mm)
 
 class Herramienta:
     LAPIZ = 1
@@ -14,13 +14,10 @@ class Herramienta:
     ZOOM = 6
     MOVER_CANVAS = 7
 
-# --- MEJORA: Rutas Dinámicas ---
-# Obtenemos la carpeta de Documentos del usuario de forma segura
+# Rutas Dinámicas
 docs_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-# Creamos una subcarpeta específica para la app
 ROOT_DIR = os.path.join(docs_path, "MiEscuelaNotebook")
 
-# Aseguramos que exista al iniciar
 if not os.path.exists(ROOT_DIR):
     try:
         os.makedirs(ROOT_DIR)

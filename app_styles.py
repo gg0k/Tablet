@@ -3,6 +3,7 @@ QMainWindow { background-color: #2b2b2b; }
 QDockWidget { color: #e0e0e0; font-weight: bold; border: 1px solid #444; }
 QDockWidget::title { background: #3c3f41; padding: 5px; }
 QListWidget, QTreeWidget { background-color: #313335; color: #a9b7c6; border: none; font-size: 14px; }
+QListWidget::item:selected, QTreeWidget::item:selected { background-color: #4b6eaf; }
 QToolBar { background-color: #3c3f41; border-right: 2px solid #555; spacing: 8px; }
 QToolButton { background-color: transparent; border: none; padding: 8px; border-radius: 5px; }
 QToolButton:hover { background-color: #4c5052; }
@@ -13,4 +14,6 @@ QGraphicsView { border: none; background-color: #555; }
 QLabel { color: #ccc; }
 QSpinBox, QSlider { background-color: #3c3f41; color: white; }
 QMenu { background-color: #3c3f41; color: white; }
+QScrollBar { background: #3c3f41; }
+QScrollBar::handle { background: #5c6062; }
 """
