@@ -354,7 +354,7 @@ class MainWindow(QMainWindow):
         self.btn_color_picker.clicked.connect(self.elegir_color)
 
         grid_colores = QHBoxLayout()
-        colores = ["#000000", "#FF0000", "#0000FF", "#008000", "#FFFF00", "#FFFFFF"]
+        colores = ["#000000", "#FF0000", "#0000FF", "#008000", "#CC25FA", "#FFFFFF"]
         for c in colores:
             btn = QPushButton()
             btn.setFixedSize(20, 20)

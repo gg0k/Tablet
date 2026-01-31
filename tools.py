@@ -2,7 +2,7 @@ import math
 import traceback
 from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QPainterPath, QPen, QCursor, QTransform, QPainterPathStroker, QBrush, QColor, QPixmap, QPainter
-from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsRectItem, QGraphicsTextItem, QGraphicsPixmapItem
+from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsRectItem, QGraphicsTextItem, QGraphicsPixmapItem, QGraphicsView
 
 from config import Herramienta
 from custom_items import EditableTextItem, TransformGizmo
@@ -34,7 +34,7 @@ class PenTool(Tool):
         self.is_drawing = False
         self.puntos_trazados = []
         self.temp_path_item = None
-        self.current_path = None  # Fix glitch (0,0)
+        self.current_path = None
 
     def activate(self):
         self.update_cursor()
@@ -64,7 +64,6 @@ class PenTool(Tool):
                 pos = self.view.mapToScene(event.pos())
                 self.puntos_trazados = [pos]
 
-                # Fix: Guardar el QPainterPath en variable local
                 self.current_path = QPainterPath()
                 self.current_path.moveTo(pos)
 
@@ -81,7 +80,6 @@ class PenTool(Tool):
             if (pos - self.puntos_trazados[-1]).manhattanLength() > 2:
                 self.puntos_trazados.append(pos)
 
-                # Fix: Actualizar nuestra copia del path y setearla al item
                 if self.current_path:
                     self.current_path.lineTo(pos)
                     self.temp_path_item.setPath(self.current_path)
@@ -92,7 +90,7 @@ class PenTool(Tool):
 
     def finish_drawing(self):
         self.is_drawing = False
-        self.current_path = None  # Limpiar referencia
+        self.current_path = None
 
         if self.temp_path_item:
             self.scene.removeItem(self.temp_path_item)
@@ -194,7 +192,6 @@ class EraserTool(Tool):
             items = self.scene.items(rect_borrado)
 
             for item in items:
-                # Fix: Verificar si el item sigue vivo en la escena
                 if item.scene() is None: continue
 
                 if isinstance(item, QGraphicsPathItem):
@@ -207,7 +204,6 @@ class EraserTool(Tool):
                     if not capa_obj or capa_obj.bloqueada or not capa_obj.visible:
                         continue
 
-                    # 1. Transformar el path de la goma a coordenadas del item
                     goma_path_in_item = item.mapFromScene(goma_path)
 
                     original_path = item.path()
@@ -283,7 +279,7 @@ class TextTool(Tool):
             for c in self.main.capas:
                 if item in c.items and c.bloqueada:
                     return
-            super(self.view.__class__, self.view).mousePressEvent(event)
+            QGraphicsView.mousePressEvent(self.view, event)
             return
 
         self.crear_texto_inline(pos)
@@ -312,7 +308,7 @@ class ZoomTool(Tool):
         super().__init__(view)
         self.zoom_start = None
         self.zoom_rect_item = None
-        self.mode = None  # 'in' or 'out'
+        self.mode = None
 
     def activate(self):
         self.view.setCursor(Qt.CursorShape.CrossCursor)
@@ -375,8 +371,7 @@ class ZoomTool(Tool):
 class SelectionTool(Tool):
     def __init__(self, view):
         super().__init__(view)
-        self.gizmo = TransformGizmo(view)
-        self.scene.addItem(self.gizmo)
+        self.gizmo = None
 
         self.is_dragging = False
         self.is_transforming = False
@@ -389,16 +384,36 @@ class SelectionTool(Tool):
 
         self.scene.selectionChanged.connect(self.on_selection_changed)
 
+    def _check_gizmo(self):
+        recreate = False
+        if self.gizmo is None:
+            recreate = True
+        else:
+            try:
+                if self.gizmo.scene() != self.scene:
+                    recreate = True
+            except RuntimeError:
+                recreate = True
+
+        if recreate:
+            self.gizmo = TransformGizmo(self.view)
+            self.scene.addItem(self.gizmo)
+            self.gizmo.hide()
+
     def activate(self):
         self.view.setDragMode(self.view.DragMode.RubberBandDrag)
         self.view.setCursor(Qt.CursorShape.ArrowCursor)
+        self._check_gizmo()
         self.update_gizmo()
 
     def deactivate(self):
         self.view.setDragMode(self.view.DragMode.NoDrag)
-        # Fix: Validar si gizmo y su escena existen antes de ocultar
-        if self.gizmo and self.gizmo.scene():
-            self.gizmo.hide()
+        if self.gizmo:
+            try:
+                if self.gizmo.scene():
+                    self.gizmo.hide()
+            except RuntimeError:
+                self.gizmo = None
 
     def on_selection_changed(self):
         if self.main.herramienta_actual == Herramienta.SELECCION:
@@ -406,15 +421,13 @@ class SelectionTool(Tool):
             self.update_gizmo()
 
     def update_gizmo(self):
-        # Fix: Protección contra crash si el Gizmo ya fue borrado por scene.clear()
-        if not self.gizmo or not self.gizmo.scene():
-            return
+        self._check_gizmo()
 
         selected = self.scene.selectedItems()
         selected = [i for i in selected if i != self.gizmo and i.parentItem() != self.gizmo]
 
         if not selected:
-            self.gizmo.hide()
+            if self.gizmo: self.gizmo.hide()
             return
 
         full_rect = QRectF()
@@ -429,10 +442,10 @@ class SelectionTool(Tool):
 
     def mouse_press(self, event):
         scene_pos = self.view.mapToScene(event.pos())
+        self._check_gizmo()
 
-        # Fix: Validar gizmo
         handle_role = None
-        if self.gizmo and self.gizmo.scene() and self.gizmo.isVisible():
+        if self.gizmo and self.gizmo.isVisible():
             handle_role = self.gizmo.get_handle_at(scene_pos)
 
         if handle_role and self.scene.selectedItems():
@@ -447,14 +460,14 @@ class SelectionTool(Tool):
             return
 
         item = self.scene.itemAt(scene_pos, QTransform())
-        # Fix: Validar gizmo
+
         if item and (not self.gizmo or item != self.gizmo):
             for c in self.main.capas:
                 if item in c.items and c.bloqueada:
                     item.setSelected(False)
                     return
 
-        super(self.view.__class__, self.view).mousePressEvent(event)
+        QGraphicsView.mousePressEvent(self.view, event)
 
         if self.scene.selectedItems() and not self.is_transforming:
             self.items_start_state = {}
@@ -469,7 +482,8 @@ class SelectionTool(Tool):
         else:
             if not self.view.cursor().shape() == Qt.CursorShape.ArrowCursor and not self.view.dragMode() == self.view.DragMode.RubberBandDrag:
                 self.view.setCursor(Qt.CursorShape.ArrowCursor)
-            super(self.view.__class__, self.view).mouseMoveEvent(event)
+
+            QGraphicsView.mouseMoveEvent(self.view, event)
 
     def mouse_release(self, event):
         if self.is_transforming:
@@ -488,7 +502,7 @@ class SelectionTool(Tool):
             if has_moved:
                 self.finalize_transform_undo()
 
-        super(self.view.__class__, self.view).mouseReleaseEvent(event)
+        QGraphicsView.mouseReleaseEvent(self.view, event)
         self.update_gizmo()
 
     def apply_transform(self, current_pos):
@@ -566,12 +580,43 @@ class SelectionTool(Tool):
 
 
 class PanTool(Tool):
+    def __init__(self, view):
+        super().__init__(view)
+        self.is_panning = False
+        self.start_pos = None
+        self.h_sb_start = 0
+        self.v_sb_start = 0
+
     def activate(self):
-        self.view.setDragMode(self.view.DragMode.ScrollHandDrag)
+        # Desactivamos modos automáticos de Qt que interfieren
+        self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.view.setCursor(Qt.CursorShape.OpenHandCursor)
-        self.view.setInteractive(False)
 
     def deactivate(self):
-        self.view.setDragMode(self.view.DragMode.NoDrag)
         self.view.setCursor(Qt.CursorShape.ArrowCursor)
-        self.view.setInteractive(True)
+
+    def mouse_press(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.is_panning = True
+            self.view.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+            # Guardamos la posición en pantalla (coordenadas de widget)
+            self.start_pos = event.pos()
+
+            # Guardamos el estado inicial de las barras de scroll
+            self.h_sb_start = self.view.horizontalScrollBar().value()
+            self.v_sb_start = self.view.verticalScrollBar().value()
+
+    def mouse_move(self, event):
+        if self.is_panning:
+            # Calculamos diferencia desde el punto de inicio
+            delta = event.pos() - self.start_pos
+
+            # Aplicamos la diferencia inversa a las barras (para simular arrastre de papel)
+            self.view.horizontalScrollBar().setValue(self.h_sb_start - delta.x())
+            self.view.verticalScrollBar().setValue(self.v_sb_start - delta.y())
+
+    def mouse_release(self, event):
+        if self.is_panning:
+            self.is_panning = False
+            self.view.setCursor(Qt.CursorShape.OpenHandCursor)
