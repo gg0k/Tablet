@@ -10,13 +10,14 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTo
                              QTreeWidget, QTreeWidgetItem, QMessageBox, QComboBox, QSpinBox,
                              QFontComboBox, QStackedWidget, QFormLayout, QInputDialog, QFrame,
                              QGraphicsItem)
-from PyQt6.QtCore import Qt, QSize, QSettings
+from PyQt6.QtCore import Qt, QSize, QSettings, QTimer
 from PyQt6.QtGui import QIcon, QAction, QKeySequence, QPixmap, QPainter, QPen, QColor, QBrush, QFont, QCursor, \
     QShortcut, QUndoStack
 
 from config import Herramienta, ROOT_DIR
 from data_models import CapaData
-from canvas_widget import VectorScene, EditorView
+# Importamos el nuevo MiniMapWidget
+from canvas_widget import VectorScene, EditorView, MiniMapWidget
 from undo_commands import CommandAdd
 
 # Importamos las herramientas refactorizadas
@@ -43,6 +44,10 @@ class MainWindow(QMainWindow):
 
         self.load_settings()
 
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.timeout.connect(self.auto_save)
+        self.autosave_timer.start(5 * 60 * 1000)
+
         # --- GESTIÓN DE PÁGINAS ---
         self.capas = []
         self.pages_data = []  # Lista de listas de capas (memoria de todas las páginas)
@@ -58,6 +63,19 @@ class MainWindow(QMainWindow):
 
         self.scene = VectorScene()
         self.view = EditorView(self.scene, self)
+
+        # --- MINI MAP (NAVIGATOR) ---
+        # Lo creamos como hijo de self.view para que flote sobre él
+        self.minimap = MiniMapWidget(self.scene, self.view, self.view)
+        # Tamaño fijo aproximado (Ratio A4 ~ 150x212)
+        self.minimap.resize(160, 226)
+        self.minimap.show()
+
+        # Conectar señales para actualizar el minimapa
+        # 1. Cuando la vista cambia (zoom/scroll/resize) -> actualizamos posición y contenido del minimapa
+        self.view.viewport_changed.connect(self.update_minimap)
+        # 2. Cuando el contenido de la escena cambia -> repintamos
+        self.scene.changed.connect(lambda: self.minimap.viewport().update())
 
         # --- LAYOUT CENTRAL ---
         container = QWidget()
@@ -113,6 +131,24 @@ class MainWindow(QMainWindow):
 
         self.update_page_ui()
 
+        # Actualización inicial del minimapa
+        self.update_minimap()
+
+    def update_minimap(self):
+        """Actualiza la posición y repintado del minimapa."""
+        if hasattr(self, 'minimap'):
+            # Posicionamiento: Esquina superior derecha con margen
+            margin = 25
+            # Ten en cuenta el scrollbar vertical si está visible
+            sb_width = self.view.verticalScrollBar().width() if self.view.verticalScrollBar().isVisible() else 0
+
+            x = self.view.width() - self.minimap.width() - margin - sb_width
+            y = margin
+            self.minimap.move(x, y)
+
+            # Forzar repintado del foreground (donde está el recuadro rojo)
+            self.minimap.viewport().update()
+
     def init_empty_state(self):
         """Reinicia el estado a una sesión vacía sin archivo."""
         self.pages_data = []
@@ -167,7 +203,17 @@ class MainWindow(QMainWindow):
         self.settings.setValue("font_family", self.font_texto.family())
         self.settings.setValue("font_size", self.font_texto.pointSize())
 
+    def auto_save(self):
+        """Función llamada por el timer para guardar automáticamente."""
+        if self.current_project_dir:
+            self.guardar_archivo()
+
     def closeEvent(self, event):
+        """Se ejecuta al cerrar la ventana."""
+        # Intentar guardar antes de salir
+        if self.current_project_dir:
+            self.guardar_archivo()
+
         self.save_settings()
         super().closeEvent(event)
 
@@ -218,6 +264,8 @@ class MainWindow(QMainWindow):
             self.action_group[tool_enum] = action
             return action
 
+
+
         add_tool_action("Lápiz (B)", "✏️", Herramienta.LAPIZ).setChecked(True)
         add_tool_action("Borrador (E)", "🧽", Herramienta.BORRADOR)
         add_tool_action("Selección (S)", "🤚", Herramienta.SELECCION)
@@ -225,6 +273,8 @@ class MainWindow(QMainWindow):
         add_tool_action("Imagen (I)", "🖼️", Herramienta.IMAGEN)
         add_tool_action("Zoom (Z)", "🔍", Herramienta.ZOOM)
         add_tool_action("Mano (Espacio)", "📄", Herramienta.MOVER_CANVAS)
+
+
 
         self.main_toolbar.addSeparator()
 
@@ -238,9 +288,9 @@ class MainWindow(QMainWindow):
         action_redo.setIconText("↪️")
         self.main_toolbar.addAction(action_redo)
 
-        btn_add_img = QPushButton("Insertar Imagen")
-        btn_add_img.clicked.connect(self.dialogo_imagen)
-        self.main_toolbar.addWidget(btn_add_img)
+        #btn_add_img = QPushButton("Insertar Imagen")
+        #btn_add_img.clicked.connect(self.dialogo_imagen)
+        #self.main_toolbar.addWidget(btn_add_img)
 
     def setup_docks(self):
         # 1. Dock Organizador
@@ -744,18 +794,17 @@ class MainWindow(QMainWindow):
         if path and os.path.exists(path):
             self.cargar_desde_archivo(path)
 
-    def guardar_archivo(self):
+    def guardar_archivo(self, silent=True):
         try:
             if not self.current_project_dir:
-                QMessageBox.warning(self, "Error", "No hay un proyecto abierto para guardar.")
+                if not silent:
+                    QMessageBox.warning(self, "Error", "No hay un proyecto abierto para guardar.")
                 return
 
             json_path = os.path.join(self.current_project_dir, "data.json")
 
-            # 1. Guardar la página actual en memoria antes de escribir a disco
             self.save_current_page_to_memory()
 
-            # 2. Estructura de guardado V2
             full_data = {
                 "version": "2.0",
                 "pages": self.pages_data
@@ -765,11 +814,16 @@ class MainWindow(QMainWindow):
                 json.dump(full_data, f)
 
             print("guardado exitoso")
-            #self.statusBar().showMessage(f"Guardado exitoso (Multipage).", 3000)
+            if not silent:
+                self.statusBar().showMessage(f"Guardado exitoso (Multipage).", 3000)
+            else:
+                self.statusBar().showMessage(f"Auto-guardado: {datetime.now().strftime('%H:%M:%S')}", 3000)
 
         except Exception as e:
             traceback.print_exc()
-            QMessageBox.critical(self, "Error Fatal", f"No se pudo guardar: {e}")
+            if not silent:
+                QMessageBox.critical(self, "Error Fatal", f"No se pudo guardar: {e}")
+
 
     def cargar_desde_archivo(self, project_path):
         """Carga un proyecto. Soporta formato v1 (solo capas) y v2 (paginas)."""
