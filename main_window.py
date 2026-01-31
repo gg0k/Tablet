@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTo
                              QListWidget, QPushButton, QLabel, QSlider, QColorDialog, QFileDialog,
                              QTreeWidget, QTreeWidgetItem, QMessageBox, QComboBox, QSpinBox,
                              QFontComboBox, QStackedWidget, QFormLayout, QInputDialog, QFrame,
-                             QGraphicsItem)
+                             QGraphicsItem, QGraphicsPixmapItem)
 from PyQt6.QtCore import Qt, QSize, QSettings, QTimer
 from PyQt6.QtGui import QIcon, QAction, QKeySequence, QPixmap, QPainter, QPen, QColor, QBrush, QFont, QCursor, \
     QShortcut, QUndoStack
@@ -218,11 +218,20 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def keyPressEvent(self, event):
+        # 1. Herramienta MANO con Espacio
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
             if self.herramienta_actual != Herramienta.MOVER_CANVAS:
                 self.herramienta_previa_mano = self.herramienta_actual
                 self.set_herramienta(Herramienta.MOVER_CANVAS)
 
+        # 2. NUEVO: Retorno de carro con SHIFT (Vuelve al inicio horizontal)
+        # Solo si NO estamos usando la herramienta de TEXTO (para permitir escribir mayúsculas)
+        if event.key() == Qt.Key.Key_Shift and not event.isAutoRepeat():
+            if self.herramienta_actual != Herramienta.TEXTO:
+                # scrollbar horizontal a 0 (Izquierda total)
+                self.view.horizontalScrollBar().setValue(0)
+
+        # 3. Borrar con Supr
         if event.key() == Qt.Key.Key_Delete:
             if self.scene.selectedItems() and self.herramienta_actual == Herramienta.SELECCION:
                 items_to_del = []
@@ -274,20 +283,14 @@ class MainWindow(QMainWindow):
 
         self.main_toolbar.addSeparator()
 
-        # MODIFICACIÓN: Ya no añadimos los botones a la toolbar, pero creamos las acciones
-        # y las añadimos a la ventana principal para mantener los atajos de teclado (Ctrl+Z / Ctrl+Y)
-
+        # Actions para Undo/Redo
         action_undo = self.undo_stack.createUndoAction(self, "Deshacer")
         action_undo.setShortcut(QKeySequence.StandardKey.Undo)
-        # action_undo.setIconText("↩️")
-        # self.main_toolbar.addAction(action_undo) # REMOVIDO DE TOOLBAR
-        self.addAction(action_undo)  # AÑADIDO A VENTANA PARA HOTKEY
+        self.addAction(action_undo)
 
         action_redo = self.undo_stack.createRedoAction(self, "Rehacer")
         action_redo.setShortcut(QKeySequence.StandardKey.Redo)
-        # action_redo.setIconText("↪️")
-        # self.main_toolbar.addAction(action_redo) # REMOVIDO DE TOOLBAR
-        self.addAction(action_redo)  # AÑADIDO A VENTANA PARA HOTKEY
+        self.addAction(action_redo)
 
     def setup_docks(self):
         # 1. Dock Organizador
@@ -468,6 +471,15 @@ class MainWindow(QMainWindow):
         hk("Z", lambda: self.set_herramienta(Herramienta.ZOOM))
 
     def set_herramienta(self, herramienta):
+        # --- MODIFICACIÓN: Interceptar Herramienta IMAGEN ---
+        if herramienta == Herramienta.IMAGEN:
+            # Abrir diálogo inmediatamente
+            self.dialogo_imagen()
+            # Cambiar a selección para que el usuario pueda mover la imagen inmediatamente (o si canceló)
+            self.set_herramienta(Herramienta.SELECCION)
+            return
+        # ---------------------------------------------------
+
         self.herramienta_actual = herramienta
 
         for tool, action in self.action_group.items():
@@ -520,8 +532,8 @@ class MainWindow(QMainWindow):
             self.insertar_imagen_path(path)
 
     def insertar_imagen_path(self, path, pos=None):
-        from PyQt6.QtWidgets import QGraphicsPixmapItem
         if pos is None:
+            # Centrar en la vista actual
             pos = self.view.mapToScene(self.view.viewport().rect().center())
 
         pixmap = QPixmap(path)
@@ -540,7 +552,10 @@ class MainWindow(QMainWindow):
             self.view.set_item_props(item)
             cmd = CommandAdd(self.scene, item, capa, self)
             self.undo_stack.push(cmd)
+            # Asegurar que quedamos en modo selección
             self.set_herramienta(Herramienta.SELECCION)
+            # Seleccionar la imagen nueva
+            item.setSelected(True)
 
     def add_layer(self, nombre):
         capa = CapaData(nombre)
