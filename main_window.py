@@ -264,8 +264,6 @@ class MainWindow(QMainWindow):
             self.action_group[tool_enum] = action
             return action
 
-
-
         add_tool_action("Lápiz (B)", "✏️", Herramienta.LAPIZ).setChecked(True)
         add_tool_action("Borrador (E)", "🧽", Herramienta.BORRADOR)
         add_tool_action("Selección (S)", "🤚", Herramienta.SELECCION)
@@ -274,23 +272,22 @@ class MainWindow(QMainWindow):
         add_tool_action("Zoom (Z)", "🔍", Herramienta.ZOOM)
         add_tool_action("Mano (Espacio)", "📄", Herramienta.MOVER_CANVAS)
 
-
-
         self.main_toolbar.addSeparator()
+
+        # MODIFICACIÓN: Ya no añadimos los botones a la toolbar, pero creamos las acciones
+        # y las añadimos a la ventana principal para mantener los atajos de teclado (Ctrl+Z / Ctrl+Y)
 
         action_undo = self.undo_stack.createUndoAction(self, "Deshacer")
         action_undo.setShortcut(QKeySequence.StandardKey.Undo)
-        action_undo.setIconText("↩️")
-        self.main_toolbar.addAction(action_undo)
+        # action_undo.setIconText("↩️")
+        # self.main_toolbar.addAction(action_undo) # REMOVIDO DE TOOLBAR
+        self.addAction(action_undo)  # AÑADIDO A VENTANA PARA HOTKEY
 
         action_redo = self.undo_stack.createRedoAction(self, "Rehacer")
         action_redo.setShortcut(QKeySequence.StandardKey.Redo)
-        action_redo.setIconText("↪️")
-        self.main_toolbar.addAction(action_redo)
-
-        #btn_add_img = QPushButton("Insertar Imagen")
-        #btn_add_img.clicked.connect(self.dialogo_imagen)
-        #self.main_toolbar.addWidget(btn_add_img)
+        # action_redo.setIconText("↪️")
+        # self.main_toolbar.addAction(action_redo) # REMOVIDO DE TOOLBAR
+        self.addAction(action_redo)  # AÑADIDO A VENTANA PARA HOTKEY
 
     def setup_docks(self):
         # 1. Dock Organizador
@@ -823,7 +820,6 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             if not silent:
                 QMessageBox.critical(self, "Error Fatal", f"No se pudo guardar: {e}")
-
 
     def cargar_desde_archivo(self, project_path):
         """Carga un proyecto. Soporta formato v1 (solo capas) y v2 (paginas)."""

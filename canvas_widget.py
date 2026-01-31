@@ -214,6 +214,16 @@ class EditorView(QGraphicsView):
         else:
             super().mouseReleaseEvent(event)
 
+    def keyPressEvent(self, event):
+        if self.current_tool:
+            self.current_tool.key_press(event)
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if self.current_tool:
+            self.current_tool.key_release(event)
+        super().keyReleaseEvent(event)
+
     def set_item_props(self, item):
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)

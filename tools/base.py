@@ -10,6 +10,8 @@ class Tool(QObject):
     def mouse_press(self, event): pass
     def mouse_move(self, event): pass
     def mouse_release(self, event): pass
+    def key_press(self, event): pass
+    def key_release(self, event): pass
     def activate(self): pass
     def deactivate(self): pass
     def update_cursor(self): pass

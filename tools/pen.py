@@ -6,6 +6,7 @@ from Tablet.config import Herramienta
 from Tablet.undo_commands import CommandAdd
 from .base import Tool
 
+
 class PenTool(Tool):
     def __init__(self, view):
         super().__init__(view)
@@ -55,7 +56,18 @@ class PenTool(Tool):
     def mouse_move(self, event):
         if self.is_drawing and self.temp_path_item:
             pos = self.view.mapToScene(event.pos())
-            if (pos - self.puntos_trazados[-1]).manhattanLength() > 2:
+
+            # --- CORRECCIÓN DE TRAZO EN ZOOM ---
+            # Obtenemos la escala actual de la vista (m11 es la escala horizontal)
+            # Si estamos en zoom x10 (scale=10), necesitamos una distancia mucho menor en coordenadas de escena
+            # para que el trazo siga siendo fluido.
+            scale = self.view.transform().m11()
+            if scale == 0: scale = 1.0  # Evitar división por cero
+
+            # El umbral base es 2.0, lo ajustamos inversamente al zoom
+            threshold = 2.0 / scale
+
+            if (pos - self.puntos_trazados[-1]).manhattanLength() > threshold:
                 self.puntos_trazados.append(pos)
 
                 if self.current_path:
