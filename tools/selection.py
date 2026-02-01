@@ -3,10 +3,11 @@ from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QTransform
 from PyQt6.QtWidgets import QGraphicsView
 
-from Tablet.config import Herramienta
-from Tablet.custom_items import TransformGizmo
-from Tablet.undo_commands import CommandMoveRotate
+from config import Herramienta
+from custom_items import TransformGizmo
+from undo_commands import CommandMoveRotate
 from .base import Tool
+
 
 class SelectionTool(Tool):
     def __init__(self, view):
@@ -107,6 +108,7 @@ class SelectionTool(Tool):
                     item.setSelected(False)
                     return
 
+        # Mantenemos este call porque en EditorView.mousePress NO llamamos a super()
         QGraphicsView.mousePressEvent(self.view, event)
 
         if self.scene.selectedItems() and not self.is_transforming:
@@ -119,11 +121,10 @@ class SelectionTool(Tool):
             current_pos = self.view.mapToScene(event.pos())
             self.apply_transform(current_pos)
             self.update_gizmo()
-        else:
-            if not self.view.cursor().shape() == Qt.CursorShape.ArrowCursor and not self.view.dragMode() == self.view.DragMode.RubberBandDrag:
-                self.view.setCursor(Qt.CursorShape.ArrowCursor)
 
-            QGraphicsView.mouseMoveEvent(self.view, event)
+        # NOTA: Eliminamos el 'else' y las llamadas manuales a super() o setCursor.
+        # EditorView ahora se encarga de llamar a super().mouseMoveEvent() PRIMERO,
+        # lo que maneja automáticamente los cursores de hover (resize handles) y RubberBand.
 
     def mouse_release(self, event):
         if self.is_transforming:
@@ -142,6 +143,7 @@ class SelectionTool(Tool):
             if has_moved:
                 self.finalize_transform_undo()
 
+        # Mantenemos este call porque en EditorView.mouseRelease NO llamamos a super()
         QGraphicsView.mouseReleaseEvent(self.view, event)
         self.update_gizmo()
 
