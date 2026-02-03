@@ -3,9 +3,9 @@ from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QTransform
 from PyQt6.QtWidgets import QGraphicsView
 
-from config import Herramienta
-from custom_items import TransformGizmo
-from undo_commands import CommandMoveRotate
+from Tablet.config import Herramienta
+from Tablet.custom_items import TransformGizmo
+from Tablet.undo_commands import CommandMoveRotate
 from .base import Tool
 
 
