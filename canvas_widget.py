@@ -1,5 +1,5 @@
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem
-from PyQt6.QtCore import Qt, QRectF, pyqtSignal
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QPushButton
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QSize
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QPainterPath
 
 from config import ANCHO_LIENZO, ALTO_LIENZO
@@ -87,13 +87,65 @@ class MiniMapWidget(QGraphicsView):
         self.setStyleSheet("background: #cccccc; border: 1px solid #444;")
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
 
+        # Estado de visibilidad (expandido/colapsado)
+        self.is_expanded = True
+        self.expanded_size = QSize(160, 226)
+        self.collapsed_size = QSize(30, 30)
+
+        # Botón Ojo (Toggle)
+        self.btn_toggle = QPushButton("👁️", self)
+        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(60, 63, 65, 200);
+                color: white;
+                border: none;
+                border-radius: 3px;
+                font-size: 14px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #4b6eaf;
+            }
+        """)
+        self.btn_toggle.setFixedSize(24, 24)
+        self.btn_toggle.clicked.connect(self.toggle_minimap)
+
+        # Posicionar botón inicialmente
+        self.update_button_pos()
+
+    def toggle_minimap(self):
+        self.is_expanded = not self.is_expanded
+
+        if self.is_expanded:
+            self.setFixedSize(self.expanded_size)
+            self.btn_toggle.setText("👁️")
+            self.setStyleSheet("background: #cccccc; border: 1px solid #444;")
+        else:
+            self.setFixedSize(self.collapsed_size)
+            # Ojo tachado (simbolizado)
+            self.btn_toggle.setText("🙈")
+            self.setStyleSheet("background: transparent; border: none;")
+
+        self.update_button_pos()
+
+        # Forzar actualización de posición en MainWindow
+        if self.main_view and hasattr(self.main_view.main, 'update_minimap'):
+            self.main_view.main.update_minimap()
+
+    def update_button_pos(self):
+        # Botón siempre arriba a la derecha
+        margin = 3
+        self.btn_toggle.move(self.width() - self.btn_toggle.width() - margin, margin)
+
     def resizeEvent(self, event):
-        if self.scene():
+        self.update_button_pos()
+        if self.is_expanded and self.scene():
             self.fitInView(self.scene().sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         super().resizeEvent(event)
 
     def drawForeground(self, painter, rect):
-        if not self.main_view or not self.scene():
+        if not self.is_expanded or not self.main_view or not self.scene():
             return
 
         viewport_rect = self.main_view.viewport().rect()

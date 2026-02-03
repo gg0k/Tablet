@@ -13,13 +13,20 @@ class Herramienta:
     SELECCION = 5
     ZOOM = 6
     MOVER_CANVAS = 7
+    FORMAS = 8  # Nueva herramienta
 
 # Rutas Dinámicas
+# NOTA: ROOT_DIR ahora se inicializa dinámicamente en MainWindow
+# pero definimos un valor por defecto seguro aquí.
 docs_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-ROOT_DIR = os.path.join(docs_path, "MiEscuelaNotebook")
+DEFAULT_ROOT_DIR = os.path.join(docs_path, "MiEscuelaNotebook")
+ROOT_DIR = DEFAULT_ROOT_DIR
 
-if not os.path.exists(ROOT_DIR):
-    try:
-        os.makedirs(ROOT_DIR)
-    except OSError as e:
-        print(f"Error creando directorio raíz: {e}")
+def set_root_dir(path):
+    global ROOT_DIR
+    ROOT_DIR = path
+    if not os.path.exists(ROOT_DIR):
+        try:
+            os.makedirs(ROOT_DIR)
+        except OSError as e:
+            print(f"Error creando directorio raíz: {e}")

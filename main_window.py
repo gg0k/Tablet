@@ -14,14 +14,16 @@ from PyQt6.QtCore import Qt, QSize, QSettings, QTimer
 from PyQt6.QtGui import QIcon, QAction, QKeySequence, QPixmap, QPainter, QPen, QColor, QBrush, QFont, QCursor, \
     QShortcut, QUndoStack
 
-from config import Herramienta, ROOT_DIR
+# Importamos config para poder modificar ROOT_DIR
+import config
+from config import Herramienta
 from data_models import CapaData
 # Importamos el nuevo MiniMapWidget
 from canvas_widget import VectorScene, EditorView, MiniMapWidget
 from undo_commands import CommandAdd
 
 # Importamos las herramientas refactorizadas
-from tools import pen, eraser, text, zoom, selection, pan
+from tools import pen, eraser, text, zoom, selection, pan, shapes
 
 # Importamos las funciones de serialización
 import serializers
@@ -35,6 +37,9 @@ class MainWindow(QMainWindow):
 
         self.undo_stack = QUndoStack(self)
         self.settings = QSettings("MiEscuelaApp", "VectorNotebook")
+
+        # --- LOGICA DE CARPETA DE DATOS ---
+        self.init_data_folder()
 
         self.color_actual = QColor("#000000")
         self.grosor_lapiz = 3
@@ -54,21 +59,13 @@ class MainWindow(QMainWindow):
         self.current_page_index = 0
         self.current_project_dir = None
 
-        # DEBUG INIT
-        if not os.path.exists(ROOT_DIR):
-            try:
-                os.makedirs(ROOT_DIR)
-            except Exception as e:
-                pass
-
         self.scene = VectorScene()
         self.view = EditorView(self.scene, self)
 
         # --- MINI MAP (NAVIGATOR) ---
         # Lo creamos como hijo de self.view para que flote sobre él
         self.minimap = MiniMapWidget(self.scene, self.view, self.view)
-        # Tamaño fijo aproximado (Ratio A4 ~ 150x212)
-        self.minimap.resize(160, 226)
+        # El tamaño se maneja internamente en MiniMapWidget ahora
         self.minimap.show()
 
         # Conectar señales para actualizar el minimapa
@@ -134,6 +131,42 @@ class MainWindow(QMainWindow):
         # Actualización inicial del minimapa
         self.update_minimap()
 
+    def init_data_folder(self):
+        """Gestiona la selección de la carpeta de datos al inicio."""
+        saved_path = self.settings.value("custom_root_dir", "")
+
+        # Validar si el path guardado existe
+        path_ok = False
+        if saved_path and os.path.exists(saved_path) and os.path.isdir(saved_path):
+            path_ok = True
+
+        while not path_ok:
+            # Pedir carpeta
+            msg = "Bienvenido.\nPor favor, selecciona la carpeta donde se guardarán tus materias y clases."
+            if saved_path: msg = f"La carpeta anterior ({saved_path}) no se encuentra.\nSelecciona una nueva carpeta de datos."
+
+            QMessageBox.information(self, "Selección de Carpeta de Datos", msg)
+
+            chosen_path = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta de Datos")
+
+            if chosen_path:
+                if os.path.exists(chosen_path):
+                    saved_path = chosen_path
+                    self.settings.setValue("custom_root_dir", saved_path)
+                    path_ok = True
+                else:
+                    QMessageBox.warning(self, "Error", "La carpeta seleccionada no es válida.")
+            else:
+                # Si el usuario cancela, preguntamos si quiere salir
+                reply = QMessageBox.question(self, "Salir",
+                                             "¿Necesitas seleccionar una carpeta para usar la aplicación.\n¿Quieres salir?",
+                                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if reply == QMessageBox.StandardButton.Yes:
+                    sys.exit(0)
+
+        # Configurar la ruta global
+        config.set_root_dir(saved_path)
+
     def update_minimap(self):
         """Actualiza la posición y repintado del minimapa."""
         if hasattr(self, 'minimap'):
@@ -178,7 +211,8 @@ class MainWindow(QMainWindow):
             Herramienta.TEXTO: text.TextTool(self.view),
             Herramienta.SELECCION: selection.SelectionTool(self.view),
             Herramienta.ZOOM: zoom.ZoomTool(self.view),
-            Herramienta.MOVER_CANVAS: pan.PanTool(self.view)
+            Herramienta.MOVER_CANVAS: pan.PanTool(self.view),
+            Herramienta.FORMAS: shapes.ShapeTool(self.view)
         }
 
         if hasattr(self, 'herramienta_actual'):
@@ -277,6 +311,7 @@ class MainWindow(QMainWindow):
         add_tool_action("Borrador (E)", "🧽", Herramienta.BORRADOR)
         add_tool_action("Selección (S)", "🤚", Herramienta.SELECCION)
         add_tool_action("Texto (T)", "T", Herramienta.TEXTO)
+        add_tool_action("Formas", "📐", Herramienta.FORMAS)
         add_tool_action("Imagen (I)", "🖼️", Herramienta.IMAGEN)
         add_tool_action("Zoom (Z)", "🔍", Herramienta.ZOOM)
         add_tool_action("Mano (Espacio)", "📄", Herramienta.MOVER_CANVAS)
@@ -394,6 +429,24 @@ class MainWindow(QMainWindow):
         panel_sel.setLayout(form_sel)
         self.stack_props.addWidget(panel_sel)
 
+        # Panel Formas
+        panel_formas = QWidget()
+        form_formas = QFormLayout()
+        combo_forma = QComboBox()
+        combo_forma.addItem("Línea", "line")
+        combo_forma.addItem("Curva (Parábola)", "curve")
+        combo_forma.currentIndexChanged.connect(
+            lambda: self.tools[Herramienta.FORMAS].set_mode(combo_forma.currentData())
+        )
+        form_formas.addRow("Tipo:", combo_forma)
+
+        lbl_help_forma = QLabel("Curva: Arrastra para línea,\nluego mueve para curvar,\nclick para terminar.")
+        lbl_help_forma.setStyleSheet("color: #aaa; font-style: italic; font-size: 11px;")
+        form_formas.addRow(lbl_help_forma)
+
+        panel_formas.setLayout(form_formas)
+        self.stack_props.addWidget(panel_formas)
+
         dock_props.setWidget(self.stack_props)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock_props)
 
@@ -489,7 +542,8 @@ class MainWindow(QMainWindow):
             Herramienta.LAPIZ: 1,
             Herramienta.BORRADOR: 2,
             Herramienta.TEXTO: 3,
-            Herramienta.SELECCION: 4
+            Herramienta.SELECCION: 4,
+            Herramienta.FORMAS: 5
         }
         self.stack_props.setCurrentIndex(map_props.get(herramienta, 0))
 
@@ -650,14 +704,14 @@ class MainWindow(QMainWindow):
     def refresh_tree(self):
         self.tree_files.clear()
         try:
-            if not os.path.exists(ROOT_DIR):
+            if not os.path.exists(config.ROOT_DIR):
                 return
 
-            materias = [d for d in os.listdir(ROOT_DIR) if os.path.isdir(os.path.join(ROOT_DIR, d))]
+            materias = [d for d in os.listdir(config.ROOT_DIR) if os.path.isdir(os.path.join(config.ROOT_DIR, d))]
             for mat in materias:
                 item_mat = QTreeWidgetItem([mat])
                 item_mat.setIcon(0, QIcon(self.style().standardIcon(self.style().StandardPixmap.SP_DirIcon)))
-                path_mat = os.path.join(ROOT_DIR, mat)
+                path_mat = os.path.join(config.ROOT_DIR, mat)
 
                 clases = [d for d in os.listdir(path_mat) if os.path.isdir(os.path.join(path_mat, d))]
                 for clase in clases:
@@ -676,7 +730,7 @@ class MainWindow(QMainWindow):
     def nueva_materia(self):
         nombre, ok = QInputDialog.getText(self, "Nueva Materia", "Nombre:")
         if ok and nombre:
-            path = os.path.join(ROOT_DIR, nombre)
+            path = os.path.join(config.ROOT_DIR, nombre)
             os.makedirs(path, exist_ok=True)
             self.refresh_tree()
 
@@ -693,7 +747,7 @@ class MainWindow(QMainWindow):
         while item.parent():
             item = item.parent()
 
-        materia_path = os.path.join(ROOT_DIR, item.text(0))
+        materia_path = os.path.join(config.ROOT_DIR, item.text(0))
         fecha = datetime.now().strftime("%d-%m-%Y")
 
         project_path = os.path.join(materia_path, fecha)
@@ -831,8 +885,8 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Guardado exitoso (Multipage).", 3000)
             else:
                 pass
-                #sin statusbar
-                #self.statusBar().showMessage(f"Auto-guardado: {datetime.now().strftime('%H:%M:%S')}", 3000)
+                # sin statusbar
+                # self.statusBar().showMessage(f"Auto-guardado: {datetime.now().strftime('%H:%M:%S')}", 3000)
 
         except Exception as e:
             traceback.print_exc()
