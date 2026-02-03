@@ -827,9 +827,12 @@ class MainWindow(QMainWindow):
 
             print("guardado exitoso")
             if not silent:
+
                 self.statusBar().showMessage(f"Guardado exitoso (Multipage).", 3000)
             else:
-                self.statusBar().showMessage(f"Auto-guardado: {datetime.now().strftime('%H:%M:%S')}", 3000)
+                pass
+                #sin statusbar
+                #self.statusBar().showMessage(f"Auto-guardado: {datetime.now().strftime('%H:%M:%S')}", 3000)
 
         except Exception as e:
             traceback.print_exc()
