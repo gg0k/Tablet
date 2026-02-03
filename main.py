@@ -8,6 +8,6 @@ if __name__ == "__main__":
     app.setStyleSheet(STYLESHEET)
 
     ventana = MainWindow()
-    ventana.show(
+    ventana.show()
 
     sys.exit(app.exec())
