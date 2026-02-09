@@ -92,6 +92,12 @@ class MiniMapWidget(QGraphicsView):
         self.expanded_size = QSize(160, 226)
         self.collapsed_size = QSize(30, 30)
 
+        if self.is_expanded:
+            self.setFixedSize(self.expanded_size)
+        else:
+            self.setFixedSize(self.collapsed_size)
+
+
         # Botón Ojo (Toggle)
         self.btn_toggle = QPushButton("👁️", self)
         self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
